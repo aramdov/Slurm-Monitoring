@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory
 import config
 import history
 from disk import fetch_disk_usage
+from jobstats_web import bp as jobstats_bp
 from slurm import (
     build_job_settings_command,
     fetch_jobs, fetch_node_capacities, fetch_node_states, fetch_nodes, fetch_partitions,
@@ -21,6 +22,7 @@ from slurm import (
 )
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+app.register_blueprint(jobstats_bp)
 
 
 def admin_required(fn):
