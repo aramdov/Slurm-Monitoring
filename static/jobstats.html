@@ -6,7 +6,7 @@
   <base href="./" />
   <title>Slurm – Jobstats</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="jobstats.css?v=m4-1" />
+  <link rel="stylesheet" href="jobstats.css?v=m4-2" />
 </head>
 <body class="jobstats-page">
   <header class="header">
@@ -69,9 +69,11 @@
           <button type="button" data-v="10">10</button>
           <button type="button" data-v="100">100</button>
         </div>
-        <label class="js-lbl" for="js-below">GPU % below</label>
+        <label class="js-lbl" for="js-metric">Filter on</label>
+        <select id="js-metric"></select>
+        <label class="js-lbl" for="js-below">below</label>
         <input type="number" id="js-below" min="0" max="100" step="1" placeholder="off" />
-        <label class="js-lbl" for="js-above">GPU % at least</label>
+        <label class="js-lbl" for="js-above">at least</label>
         <input type="number" id="js-above" min="0" max="100" step="1" placeholder="off" />
       </div>
       <div class="js-row js-chips" id="js-tokens">
@@ -130,7 +132,7 @@
 
   <main class="js-wrap" id="js-jobview" hidden></main>
 
-  <script src="jobstats-core.js?v=m4-1"></script>
-  <script src="jobstats.js?v=m4-1"></script>
+  <script src="jobstats-core.js?v=m4-2"></script>
+  <script src="jobstats.js?v=m4-2"></script>
 </body>
 </html>

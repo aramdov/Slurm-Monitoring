@@ -12,6 +12,17 @@
   const MEAN_KEYS = ["gpu_pct", "sm", "tc", "dram", "occ", "fp32", "int", "power_w"];
   const SEEN_KEYS = ["fp16_seen", "fp64_seen"];
   const TOKEN_KINDS = ["id", "node", "state", "summary"];
+  // Job-level values the "below / at least" filter can use. max 100 = a percentage.
+  const FILTER_METRICS = [
+    { key: "gpu_pct", label: "GPU %", max: 100 }, { key: "sm", label: "SM %", max: 100 },
+    { key: "tc", label: "TC %", max: 100 }, { key: "dram", label: "DRAM %", max: 100 },
+    { key: "occ", label: "OCC %", max: 100 }, { key: "fp32", label: "FP32 %", max: 100 },
+    { key: "int", label: "INT %", max: 100 }, { key: "power_w", label: "Power W", max: null },
+    { key: "cpu_eff", label: "CPU eff %", max: 100 },
+    { key: "gpu_mem_peak_pct", label: "GPU mem peak %", max: 100 },
+    { key: "cpu_mem_peak_pct", label: "CPU mem peak %", max: 100 },
+  ];
+  const filterMetric = (k) => (FILTER_METRICS.some((m) => m.key === k) ? k : "gpu_pct");
   // EpilogSlurmctld started writing summaries at 2026-10-29 19:10:37 UTC (jobstats runbook, step 06).
   const HOOK_LIVE_S = 1793301037;
   // The epilog writes up to about 3 min after job end; wait 10 min before calling a summary missing.
@@ -77,6 +88,7 @@
     const p = typeof query === "string" ? parseQuery(query) : query;
     const f = filters || {};
     const showUnstarted = p.state.length > 0 || p.summary.length > 0;
+    const mk = filterMetric(f.metric);
     return rows.filter((r) => {
       if (r.not_started && !showUnstarted) return false;
       if (p.terms.length) {
@@ -89,8 +101,9 @@
       if (p.summary.length && !p.summary.some((v) => summaryMatch(r, v, nowS))) return false;
       if (!gpuCountMatch(r.alloc_gpus, f.gpus)) return false;
       if (f.minGpuHours && !(r.gpu_hours >= f.minGpuHours)) return false;
-      if (f.below != null && !(r.gpu_pct != null && r.gpu_pct < f.below)) return false;
-      if (f.above != null && !(r.gpu_pct != null && r.gpu_pct >= f.above)) return false;
+      // rows without a value for the metric never match a bound
+      if (f.below != null && !(r[mk] != null && r[mk] < f.below)) return false;
+      if (f.above != null && !(r[mk] != null && r[mk] >= f.above)) return false;
       return true;
     });
   }
@@ -419,7 +432,7 @@
   }
 
   return {
-    MEAN_KEYS, SEEN_KEYS, HOOK_LIVE_S, UNWRITTEN_GRACE_S, DASH,
+    MEAN_KEYS, SEEN_KEYS, FILTER_METRICS, HOOK_LIVE_S, UNWRITTEN_GRACE_S, DASH,
     parseQuery, filterRows, isUnwritten, sortRows, sortValue,
     percentile, spread, aggregate, groupKey, groupRows,
     gpuTable, nodeRows, lifecycle, NOTE_LIMITS, jobNotes, gpuColor, summaryLabel, fmtPct, fmtNum, fmtGB, fmtElapsed, fmtGpuHours,

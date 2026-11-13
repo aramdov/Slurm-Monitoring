@@ -12,7 +12,7 @@
   const GPAGE = 100;
   const MEMBER_LIMIT = 200;
 
-  const DEF = { range: "7d", from: null, to: null, q: "", gpus: "all", mingh: 0, below: null, above: null,
+  const DEF = { range: "7d", from: null, to: null, q: "", gpus: "all", mingh: 0, metric: "gpu_pct", below: null, above: null,
                 sort: "end", dir: "desc", view: "jobs", by: "name", gsort: "gpu_hours", gdir: "desc" };
   const st = Object.assign({}, DEF, { limit: PAGE, glimit: GPAGE, data: null, open: new Set(), cache: null });
 
@@ -157,6 +157,7 @@
     st.q = p.get("q") || "";
     st.gpus = pick(p.get("gpus"), ["all", "0", "1", "2-7", "8+"], DEF.gpus);
     st.mingh = Number(pick(p.get("mingh"), ["0", "1", "10", "100"], "0"));
+    st.metric = pick(p.get("metric"), C.FILTER_METRICS.map((m) => m.key), DEF.metric);
     st.below = num(p.get("below"));
     st.above = num(p.get("above"));
     st.sort = pick(p.get("sort"), COLKEYS, DEF.sort);
@@ -176,6 +177,7 @@
     if (st.q) p.set("q", st.q);
     for (const k of ["gpus", "sort", "dir", "view", "by", "gsort", "gdir"]) if (st[k] !== DEF[k]) p.set(k, st[k]);
     if (st.mingh) p.set("mingh", st.mingh);
+    if (st.metric !== DEF.metric) p.set("metric", st.metric);
     if (st.below != null) p.set("below", st.below);
     if (st.above != null) p.set("above", st.above);
     const qs = p.toString();
@@ -244,7 +246,7 @@
   }
 
   function filtered() {
-    const f = { gpus: st.gpus, minGpuHours: st.mingh, below: st.below, above: st.above };
+    const f = { gpus: st.gpus, minGpuHours: st.mingh, metric: st.metric, below: st.below, above: st.above };
     const sig = JSON.stringify([st.q, f]);
     if (!st.cache || st.cache.sig !== sig) {
       st.cache = { sig, rows: C.filterRows(st.data.jobs, st.q, f, st.nowS) };
@@ -268,6 +270,11 @@
       $("#js-to").value = localInput(st.to);
     }
     if ($("#js-q").value !== st.q) $("#js-q").value = st.q;
+    $("#js-metric").value = st.metric;
+    const cap = (C.FILTER_METRICS.find((m) => m.key === st.metric) || {}).max;
+    for (const id of ["#js-below", "#js-above"]) {
+      if (cap) $(id).setAttribute("max", cap); else $(id).removeAttribute("max");
+    }
     $("#js-below").value = st.below == null ? "" : st.below;
     $("#js-above").value = st.above == null ? "" : st.above;
     $("#js-by").hidden = st.view !== "groups";
@@ -749,6 +756,8 @@
     clearTimeout(qTimer);
     qTimer = setTimeout(() => update({ q: e.target.value }), 150);
   });
+  $("#js-metric").replaceChildren(...C.FILTER_METRICS.map((m) => el("option", { value: m.key }, m.label)));
+  $("#js-metric").addEventListener("change", (e) => update({ metric: e.target.value }));
   for (const id of ["below", "above"]) {
     $("#js-" + id).addEventListener("input", (e) => update({ [id]: num(e.target.value.trim()) }));
   }

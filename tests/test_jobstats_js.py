@@ -198,6 +198,32 @@ class JsExplorerTests(unittest.TestCase):
         self.assertEqual(self.ids("", {"below": 100}), ["26450", "4004"])
         self.assertEqual(sorted(self.ids("", {"above": 0})), ["26450", "4004"])
 
+    def test_metric_filter(self):
+        rows = [{"jobid": j, "jobid_raw": j, "name": "x", "state": "COMPLETED", "nodes": ["n"], "not_started": False,
+                 "alloc_gpus": 1, "gpu_hours": 1, "summary_state": "ok", "gpu_pct": g, "sm": sm, "power_w": pw,
+                 "cpu_eff": ce}
+                for j, g, sm, pw, ce in [("1", 90, 10, 650, 5), ("2", 10, 60, 200, 50), ("3", 50, None, None, None)]]
+        def ids(f):
+            return run_js("return core.filterRows(data, '', %s, %d).map(r => r.jobid);" % (json.dumps(f), NOW_S), rows)
+        self.assertEqual(ids({"below": 50}), ["2"])                         # default metric is GPU %
+        self.assertEqual(ids({"metric": "sm", "below": 50}), ["1"])         # null SM never matches
+        self.assertEqual(ids({"metric": "sm", "above": 0}), ["1", "2"])
+        self.assertEqual(ids({"metric": "sm", "above": 10, "below": 60}), ["1"])
+        self.assertEqual(ids({"metric": "power_w", "above": 400}), ["1"])   # not capped at 100
+        self.assertEqual(ids({"metric": "cpu_eff", "below": 20}), ["1"])
+        self.assertEqual(ids({"metric": "jobid", "below": 50}), ["2"])      # unknown metric falls back to GPU %
+        self.assertEqual(ids({"metric": "sm"}), ["1", "2", "3"])           # no bounds, no filter
+
+    def test_filter_metrics_are_row_fields(self):
+        metrics = run_js("return core.FILTER_METRICS;", None)
+        self.assertEqual(metrics[0]["key"], "gpu_pct")
+        row = row_from(fixture_line("2920"), NOW_S)[0] if "2920" in FIXTURES else \
+            row_from(fixture_line(next(iter(FIXTURES))), NOW_S)[0]
+        for m in metrics:
+            self.assertIn(m["key"], row, m["key"])
+            self.assertTrue(m["label"])
+            self.assertIn(m["max"], (100, None), m["key"])
+
     def test_unwritten_label_needs_grace_period(self):
         end = 1793403700
         body = ("const r = data.find(x => x.jobid === '4002');"

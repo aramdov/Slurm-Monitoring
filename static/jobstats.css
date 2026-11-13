@@ -28,13 +28,14 @@ body.jobstats-page {
 .js-inline { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .js-controls { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
-.jobstats-page input[type=search], .jobstats-page input[type=number], .jobstats-page input[type=datetime-local] {
+.jobstats-page input[type=search], .jobstats-page input[type=number], .jobstats-page input[type=datetime-local],
+.jobstats-page select {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
   border-radius: 4px; padding: 5px 8px; min-height: 28px; max-width: 100%;
 }
 .jobstats-page input[type=search] { width: 100%; }
 .jobstats-page input[type=number] { width: 70px; }
-.jobstats-page input:focus-visible, .jobstats-page button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.jobstats-page input:focus-visible, .jobstats-page select:focus-visible, .jobstats-page button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .js-wrap button, .js-controls button {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
   border-radius: 4px; padding: 4px 9px; min-height: 28px; cursor: pointer;
