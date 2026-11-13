@@ -104,6 +104,8 @@ def init_db(path: str):
             conn.execute("ALTER TABLE jobs ADD COLUMN req_cpuonly INTEGER DEFAULT 0")
         if "partition" not in existing:
             conn.execute("ALTER TABLE jobs ADD COLUMN partition TEXT")
+        if "raw_job_id" not in existing:
+            conn.execute("ALTER TABLE jobs ADD COLUMN raw_job_id TEXT")
         existing_meta = {row[1] for row in conn.execute("PRAGMA table_info(meta)")}
         if existing_meta and "partitions_json" not in existing_meta:
             conn.execute("ALTER TABLE meta ADD COLUMN partitions_json TEXT")
@@ -188,7 +190,8 @@ def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int):
                             req_cpuonly = ?,
                             time_limit_ms = ?, priority = ?,
                             array_task_count = ?, allocations_json = ?,
-                            pending_reason = ?, partition = ?, last_seen_ms = ?
+                            pending_reason = ?, partition = ?, last_seen_ms = ?,
+                            raw_job_id = COALESCE(?, raw_job_id)
                         WHERE id = ?
                     """, (
                         job.get("user"), job.get("job_name"), job.get("state"),
@@ -198,7 +201,7 @@ def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int):
                         job.get("time_limit_ms"), job.get("priority", 0),
                         job.get("array_task_count", 1), allocations_json,
                         job.get("pending_reason", ""), job.get("partition", ""),
-                        fetch_ts_ms, row[0]
+                        fetch_ts_ms, job.get("raw_job_id"), row[0]
                     ))
                 else:
                     # Insert
@@ -208,8 +211,9 @@ def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int):
                             start_time_ms, end_time_ms, submit_time_ms,
                             req_gpus, req_cpus, req_mem, req_cpuonly,
                             time_limit_ms, priority, array_task_count,
-                            allocations_json, pending_reason, partition, last_seen_ms
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            allocations_json, pending_reason, partition, last_seen_ms,
+                            raw_job_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         job_id, job.get("user"), job.get("job_name"), job.get("state"),
                         job.get("start_time"), job.get("end_time"), submit_time_ms,
@@ -217,7 +221,8 @@ def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int):
                         job.get("req_cpuonly", 0),
                         job.get("time_limit_ms"), job.get("priority", 0),
                         job.get("array_task_count", 1), allocations_json,
-                        job.get("pending_reason", ""), job.get("partition", ""), fetch_ts_ms
+                        job.get("pending_reason", ""), job.get("partition", ""), fetch_ts_ms,
+                        job.get("raw_job_id")
                     ))
             conn.commit()
         finally:
@@ -552,6 +557,25 @@ def get_gpu_trend(db_path, job_id, submit_ms):
             (job_id, submit_ms, first, width)).fetchall()
         return {"raw_retained": True, "bucket_ms": width,
                 "points": [dict(zip(("t", "gpu", "vram", "memory", "gpu_min", "gpu_max", "n"), p)) for p in points]}
+
+
+def get_job(db_path: str, job_id: str, submit_ms: int) -> dict[str, Any] | None:
+    """One job identity in the same API shape as get_jobs_in_window, or None."""
+    with _db_lock:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ? AND submit_time_ms = ?",
+                               (job_id, submit_ms)).fetchone()
+        finally:
+            conn.close()
+    if not row:
+        return None
+    job = dict(row)
+    job["allocations"] = json.loads(job.pop("allocations_json", None) or "[]")
+    for field in ("start_time", "end_time", "submit_time"):
+        job[field] = job.pop(field + "_ms", None)
+    return job
 
 
 def get_jobs_in_window(db_path: str, from_ms: int, to_ms: int) -> list[dict[str, Any]]:

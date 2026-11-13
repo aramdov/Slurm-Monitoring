@@ -108,6 +108,13 @@ def api_job_gpu(job_id):
     submit = request.args.get("submit", type=int)
     if submit is None:
         return jsonify({"error": "Missing submit timestamp"}), 400
+    if config.GPU_SOURCE == "prometheus":
+        import prom_gpu
+        job = history.get_job(config.HISTORY_DB_PATH, job_id, submit)
+        try:
+            return jsonify(prom_gpu.get_gpu_trend(job, int(time.time() * 1000)))
+        except prom_gpu.PrometheusError:
+            return jsonify({"error": "Prometheus unavailable"}), 503
     return jsonify(history.get_gpu_trend(config.HISTORY_DB_PATH, job_id, submit))
 
 
@@ -185,7 +192,11 @@ def api_jobs():
     
     # Read from DB
     jobs = history.get_jobs_in_window(config.HISTORY_DB_PATH, from_ms, to_ms)
-    history.get_gpu_metrics(config.HISTORY_DB_PATH, jobs, int(time.time() * 1000))
+    if config.GPU_SOURCE == "prometheus":
+        import prom_gpu
+        prom_gpu.get_gpu_metrics(jobs, int(time.time() * 1000))
+    else:
+        history.get_gpu_metrics(config.HISTORY_DB_PATH, jobs, int(time.time() * 1000))
     meta = history.get_latest_meta(config.HISTORY_DB_PATH)
     
     return jsonify({

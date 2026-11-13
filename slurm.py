@@ -1,4 +1,5 @@
 """Query Slurm (squeue/scontrol) and return job list for the dashboard."""
+import os
 import re
 import shlex
 import subprocess
@@ -6,7 +7,16 @@ from datetime import datetime
 from typing import Any
 
 
+import config
+
+_SLURM_COMMANDS = {"squeue", "sinfo", "scontrol", "sacct"}
+
+
 def _run(cmd: list[str], timeout: int = 30) -> str:
+    # A host can carry a distro Slurm client older than the controller (BCM11:
+    # /usr/bin is 23.11, slurmctld 25.05). Let config pin the matching client.
+    if config.SLURM_BIN and cmd and cmd[0] in _SLURM_COMMANDS:
+        cmd = [os.path.join(config.SLURM_BIN, cmd[0]), *cmd[1:]]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         return ""
@@ -183,14 +193,16 @@ def fetch_jobs() -> list[dict[str, Any]]:
     """
     # Delimiter | to avoid splitting on spaces in job names.
     # %V submit, %S start, %e end, %m min memory (MB), %l time limit, %P partition, %r pending reason.
+    # %A is the raw job id (SLURM_JOB_ID): array task 382796_9 has its own raw id,
+    # and that is what node-side exporters label GPU series with.
     # %r is last because pending reasons are free text and get the split remainder.
-    fmt = "%i|%u|%j|%T|%S|%e|%V|%N|%C|%b|%m|%Q|%l|%P|%r"
+    fmt = "%i|%u|%j|%T|%S|%e|%V|%N|%C|%b|%m|%Q|%l|%P|%A|%r"
     out = _run(["squeue", "-h", "-a", "-o", fmt])
     jobs = []
     for line in out.splitlines():
         if not line.strip():
             continue
-        parts = line.split("|", 14)
+        parts = line.split("|", 15)
         if len(parts) < 12:
             continue
         job_id, user, job_name, state, start_s, end_s, submit_s, nodelist, cpus_s, gres, mem_s, priority_s = (
@@ -200,7 +212,8 @@ def fetch_jobs() -> list[dict[str, Any]]:
         )
         time_limit_s = parts[12].strip() if len(parts) > 12 else ""
         partition = parts[13].strip() if len(parts) > 13 else ""
-        pending_reason = parts[14].strip() if len(parts) > 14 else ""
+        raw_job_id = parts[14].strip() if len(parts) > 14 else ""
+        pending_reason = parts[15].strip() if len(parts) > 15 else ""
         try:
             job_id_int = int(job_id.split("_")[0])
         except ValueError:
@@ -261,6 +274,7 @@ def fetch_jobs() -> list[dict[str, Any]]:
             "array_task_count": array_tasks,
             "pending_reason": pending_reason,
             "partition": partition,
+            "raw_job_id": raw_job_id if raw_job_id.isdigit() else None,
         }
         jobs.append(job)
     _fill_gpus_from_scontrol(jobs)

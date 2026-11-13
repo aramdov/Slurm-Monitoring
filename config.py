@@ -12,8 +12,21 @@ CPUS_PER_NODE = 224
 REFRESH_INTERVALS = [5, 10, 30, 60]  # seconds
 DEFAULT_REFRESH = 10
 
+# Where per-job GPU measurements come from:
+#   "sampler"    -- nodes push nvidia-smi snapshots to /api/gpu-samples (SQLite tables)
+#   "prometheus" -- read jobstats' nvml_exporter series (labelled jobid=) from Prometheus
+GPU_SOURCE = os.environ.get("SLURM_DASHBOARD_GPU_SOURCE", "sampler")
+PROMETHEUS_URL = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_URL", "http://127.0.0.1:9090")
+PROMETHEUS_SCRAPE_SEC = int(os.environ.get("SLURM_DASHBOARD_PROMETHEUS_SCRAPE_SEC", "30"))
+
+# Directory holding squeue/sinfo/scontrol. Empty = whatever is first on PATH.
+SLURM_BIN = os.environ.get("SLURM_DASHBOARD_SLURM_BIN", "")
+
 # History settings
-HISTORY_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "slurm_history.db")
+HISTORY_DB_PATH = os.environ.get(
+    "SLURM_DASHBOARD_DB",
+    os.path.join(os.path.dirname(__file__), "data", "slurm_history.db"),
+)
 HISTORY_RETENTION_DAYS = None  # None = keep forever (no cleanup)
 JOB_NAME_PREFIX_LEN = 35
 DURATION_STATS_TTL_SEC = 3600  # 1 hour
