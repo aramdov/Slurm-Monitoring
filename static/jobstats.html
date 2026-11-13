@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="./" />
+  <title>Slurm – Jobstats</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="jobstats.css?v=m4-2" />
+</head>
+<body class="jobstats-page">
+  <header class="header">
+    <h1>Slurm cluster</h1>
+    <nav class="nav-tabs">
+      <a href="./" class="nav-tab">Dashboard</a>
+      <a href="usage" class="nav-tab">Usage</a>
+      <a href="jobstats" class="nav-tab nav-tab--active">Jobstats</a>
+    </nav>
+    <div class="controls"><span id="js-updated" class="last-updated"></span></div>
+  </header>
+
+  <main class="js-wrap" id="js-main">
+    <section class="js-controls" role="search" aria-label="Job search">
+      <div class="js-row">
+        <div class="js-ctl">
+          <span class="js-lbl">Range</span>
+          <div class="js-seg" id="js-range" role="group" aria-label="Date range">
+            <button type="button" data-v="1d">1d</button>
+            <button type="button" data-v="7d">7d</button>
+            <button type="button" data-v="30d">30d</button>
+            <button type="button" data-v="90d">90d</button>
+            <button type="button" data-v="custom">custom</button>
+          </div>
+        </div>
+        <div class="js-ctl" id="js-custom" hidden>
+          <span class="js-lbl">From / to (your local time)</span>
+          <div class="js-inline">
+            <input type="datetime-local" id="js-from" aria-label="From" />
+            <input type="datetime-local" id="js-to" aria-label="To" />
+            <button type="button" id="js-apply">Apply</button>
+          </div>
+        </div>
+        <div class="js-ctl js-grow">
+          <label class="js-lbl" for="js-q">Search</label>
+          <input type="search" id="js-q" autocomplete="off" spellcheck="false"
+                 placeholder="name substring, plus id:3337  id:2645_*  node:b200-8c  state:FAILED  summary:missing" />
+        </div>
+        <div class="js-ctl">
+          <span class="js-lbl">&nbsp;</span>
+          <div class="js-inline">
+            <button type="button" id="js-reload" title="Fetch the range again">Reload</button>
+            <button type="button" id="js-reset">Reset</button>
+          </div>
+        </div>
+      </div>
+      <div class="js-row js-chips">
+        <span class="js-lbl">GPUs</span>
+        <div class="js-seg" id="js-gpus" role="group" aria-label="GPU count">
+          <button type="button" data-v="all">all</button>
+          <button type="button" data-v="0">CPU only</button>
+          <button type="button" data-v="1">1</button>
+          <button type="button" data-v="2-7">2–7</button>
+          <button type="button" data-v="8+">8+</button>
+        </div>
+        <span class="js-lbl">Min GPU-h</span>
+        <div class="js-seg" id="js-mingh" role="group" aria-label="Minimum GPU-hours">
+          <button type="button" data-v="0">any</button>
+          <button type="button" data-v="1">1</button>
+          <button type="button" data-v="10">10</button>
+          <button type="button" data-v="100">100</button>
+        </div>
+        <label class="js-lbl" for="js-metric">Filter on</label>
+        <select id="js-metric"></select>
+        <label class="js-lbl" for="js-below">below</label>
+        <input type="number" id="js-below" min="0" max="100" step="1" placeholder="off" />
+        <label class="js-lbl" for="js-above">at least</label>
+        <input type="number" id="js-above" min="0" max="100" step="1" placeholder="off" />
+      </div>
+      <div class="js-row js-chips" id="js-tokens">
+        <span class="js-lbl">Add token</span>
+        <button type="button" class="js-chip" data-tok="state:FAILED">state:FAILED</button>
+        <button type="button" class="js-chip" data-tok="state:RUNNING">state:RUNNING</button>
+        <button type="button" class="js-chip" data-tok="summary:ok">summary:ok</button>
+        <button type="button" class="js-chip" data-tok="summary:missing">summary:missing</button>
+        <button type="button" class="js-chip" data-tok="summary:unwritten">summary:unwritten</button>
+        <span class="js-hint">Tokens of one kind are OR'd (state:FAILED state:TIMEOUT). <code>*</code> is a wildcard in id: and node:.</span>
+      </div>
+    </section>
+
+    <div class="js-viewbar">
+      <div class="js-seg js-tabs" id="js-view" role="group" aria-label="View">
+        <button type="button" data-v="jobs">Jobs</button>
+        <button type="button" data-v="groups">Groups</button>
+      </div>
+      <div class="js-seg" id="js-by" role="group" aria-label="Group by" hidden>
+        <button type="button" data-v="name">exact name</button>
+        <button type="button" data-v="array">array parent</button>
+        <button type="button" data-v="family">name family</button>
+      </div>
+      <div class="js-stats" id="js-stats" aria-live="polite"></div>
+    </div>
+    <div class="js-msg" id="js-msg" hidden></div>
+    <div class="js-warn" id="js-famwarn" hidden>Name family replaces every digit run with <code>#</code>, so it can merge
+      different model sizes and versions, not only seeds. Check the member names before reading a family's numbers.</div>
+
+    <div class="js-tw" id="js-jobs-wrap">
+      <table class="js-table" id="js-jobs"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="js-tw" id="js-groups-wrap" hidden>
+      <table class="js-table" id="js-groups"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="js-more"><button type="button" id="js-more" hidden></button></div>
+
+    <div class="js-note">
+      <b>How the numbers are computed</b>
+      <ul>
+        <li>Per-job GPU columns are the mean over that job's GPUs that report the field. A dash means no value, never zero.
+          GPU % is NVML utilization; SM, TC (tensor) and DRAM are GPM fractions shown as percent.</li>
+        <li>GPU-h is allocated GPUs × elapsed, for every job. Metrics come only from jobs with a summary (<code>ok</code>).</li>
+        <li>Totals and group means are weighted by GPU-seconds: Σ(elapsed × value × GPUs with the field) / Σ(elapsed × GPUs
+          with the field). Spread (p10, median, p90) is over per-job values, unweighted, with 3 or more jobs.</li>
+        <li>CPU eff is Σ CPU-seconds used / Σ CPU-seconds allocated. Memory columns are peaks: totals and groups show the
+          max (and the median in groups) of per-job peak %, never an average. FP16 / FP64 is the share of jobs where
+          nonzero activity was seen.</li>
+        <li>Coverage is GPU-seconds with a GPU % value over allocated GPU-seconds, for jobs with a summary.</li>
+        <li>Summaries store time means without sample counts, so a mean assumes the sampled period represents the run.</li>
+        <li>Summaries exist for jobs that ended after 29 Oct 19:10 UTC. <b>not written</b> marks a job that ran and ended
+          after that, more than 10 min ago, without one.</li>
+      </ul>
+    </div>
+  </main>
+
+  <main class="js-wrap" id="js-jobview" hidden></main>
+
+  <script src="jobstats-core.js?v=m4-2"></script>
+  <script src="jobstats.js?v=m4-2"></script>
+</body>
+</html>

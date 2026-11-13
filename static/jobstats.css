@@ -1,0 +1,141 @@
+/* Jobstats page. Uses the variables from style.css; layout follows the jobstats design preview. */
+
+body.jobstats-page {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  overflow: auto;
+  --good: #4ade80;
+  --good-bg: rgba(34, 197, 94, 0.14);
+  --warn: #fbbf24;
+  --warn-bg: rgba(245, 158, 11, 0.14);
+  --bad: #f87171;
+  --bad-bg: rgba(239, 68, 68, 0.14);
+  --row-hl: #23232b;
+  --panel2: #131317;
+}
+
+.js-wrap { padding: 12px 16px 48px; max-width: 1800px; }
+.js-wrap[hidden] { display: none; }
+.js-lbl { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.js-hint { color: var(--text-muted); font-size: 11px; }
+.js-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-end; }
+.js-row + .js-row { margin-top: 8px; }
+.js-chips { align-items: center; gap: 6px 10px; }
+.js-ctl { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.js-ctl[hidden] { display: none; }
+.js-grow { flex: 1 1 360px; }
+.js-inline { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.js-controls { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
+.jobstats-page input[type=search], .jobstats-page input[type=number], .jobstats-page input[type=datetime-local],
+.jobstats-page select {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 5px 8px; min-height: 28px; max-width: 100%;
+}
+.jobstats-page input[type=search] { width: 100%; }
+.jobstats-page input[type=number] { width: 70px; }
+.jobstats-page input:focus-visible, .jobstats-page select:focus-visible, .jobstats-page button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.js-wrap button, .js-controls button {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 9px; min-height: 28px; cursor: pointer;
+}
+.js-wrap button:hover { border-color: #52525b; }
+
+.js-seg { display: inline-flex; }
+.js-seg[hidden] { display: none; }
+.js-seg button { border-radius: 0; margin-left: -1px; }
+.js-seg button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+.js-seg button:last-child { border-radius: 0 4px 4px 0; }
+.js-seg button[aria-pressed="true"] { background: var(--row-bg); color: var(--text); border-color: var(--accent); position: relative; z-index: 1; }
+.js-chip { font-size: 11px; padding: 2px 7px; min-height: 24px; }
+
+.js-viewbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0 8px; }
+.js-tabs button { font-weight: 600; padding: 5px 14px; }
+.js-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--text-muted); font-size: 11px; }
+.js-stats b { color: var(--text); font-weight: 600; font-size: 12px; }
+
+.js-msg { border: 1px solid var(--border); background: var(--surface); padding: 10px 12px; margin: 8px 0; border-radius: 4px; }
+.js-msg.bad { border-color: var(--bad); color: var(--bad); }
+.js-msg[hidden], .js-warn[hidden] { display: none; }
+.js-warn { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 7px 10px; margin: 8px 0; font-size: 11px; }
+
+/* tables */
+.js-tw { overflow: auto; max-height: calc(100vh - 210px); min-height: 160px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel2); }
+.js-tw[hidden] { display: none; }
+.js-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.js-table th, .js-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; vertical-align: middle; }
+.js-table thead th { position: sticky; z-index: 2; background: var(--surface); }
+.js-table thead tr.js-head th { top: 0; color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.js-table thead tr.js-total th { top: var(--headh, 25px); font-weight: 600; color: var(--text); background: #1b1b21; border-bottom: 1px solid #3f3f46; }
+.js-table .n { text-align: right; }
+.js-table th button.js-sort { all: unset; cursor: pointer; display: inline-flex; gap: 3px; align-items: center; }
+.js-table th button.js-sort:focus-visible { outline: 2px solid var(--accent); }
+.js-table th .ar { color: var(--accent); min-width: 8px; }
+.js-table tbody tr:hover > td { background: var(--row-hl); }
+.js-table td.name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.js-table td.nodes { max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+.js-table a { color: #93c5fd; text-decoration: none; }
+.js-table a:hover { text-decoration: underline; }
+.js-dim { color: var(--text-muted); }
+
+.st-COMPLETED { color: var(--good); }
+.st-FAILED, .st-OUT_OF_MEMORY, .st-NODE_FAIL, .st-BOOT_FAIL { color: var(--bad); }
+.st-TIMEOUT, .st-CANCELLED, .st-PREEMPTED { color: var(--warn); }
+.st-RUNNING, .st-PENDING { color: #93c5fd; }
+
+.js-badge { display: inline-block; min-width: 44px; text-align: right; color: #fff; border-radius: 3px; padding: 1px 5px; }
+.js-pill { display: inline-block; font-size: 10px; line-height: 1; padding: 3px 5px; border: 1px solid; border-radius: 3px; }
+.js-pill.ok { color: var(--good); border-color: var(--good); background: var(--good-bg); }
+.js-pill.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+.js-pill.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
+.js-pill.na { color: var(--text-muted); border-color: transparent; }
+
+/* groups */
+#js-groups tbody tr.js-grow-row { cursor: pointer; }
+#js-groups tbody tr.js-open > td { background: var(--row-hl); }
+.js-key { font-weight: 600; }
+.js-tw .js-tog { display: inline-block; width: 12px; color: var(--text-muted); }
+.js-members { display: block; color: var(--text-muted); font-size: 10.5px; white-space: normal; max-width: 360px; }
+.js-allnames { max-width: none; margin: 6px 0; }
+.js-sub > td { padding: 0 0 8px 22px; background: var(--bg); }
+.js-sub .js-table { font-size: 11px; border-left: 2px solid var(--accent); }
+.js-sub .js-table thead th { position: static; }
+.js-spread { display: inline-flex; align-items: center; gap: 6px; }
+svg.js-strip .ax { stroke: #3f3f46; }
+svg.js-strip .dot { fill: #93c5fd; opacity: 0.55; }
+svg.js-strip .q { stroke: #a1a1aa; stroke-width: 1.2; }
+svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
+
+.js-more { margin-top: 8px; }
+.js-more button[hidden] { display: none; }
+.js-note { border: 1px solid var(--border); background: var(--surface); border-radius: 4px; padding: 10px 12px; margin-top: 14px; color: #a1a1aa; line-height: 1.5; }
+.js-note b { color: var(--text); }
+.js-note ul { margin: 4px 0 0; padding-left: 18px; }
+.js-note code, .js-warn code, .js-hint code { color: var(--text); }
+
+/* job view (M4 fills in the per-GPU table) */
+.js-jobhead { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); border: 1px solid var(--border); border-radius: 4px; background: var(--surface); margin: 10px 0; }
+.js-jobhead div { padding: 7px 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); min-width: 0; }
+.js-jobhead .k { display: block; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.js-jobhead .v { display: block; font-size: 12.5px; overflow-wrap: anywhere; }
+.js-cmd { display: flex; gap: 6px; align-items: center; margin: 8px 0; }
+.js-cmd input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; width: 220px; }
+
+@media (max-width: 700px) {
+  .js-wrap { padding: 10px 16px 40px; }
+  .js-tw { max-height: none; }
+  .js-table thead th { position: static; }
+}
+.js-jobtitle { font-size: 15px; margin: 4px 0 0; overflow-wrap: anywhere; }
+.js-back { color: #93c5fd; text-decoration: none; }
+
+/* job view: per-GPU and per-node tables */
+.js-sechead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 16px 0 6px; }
+.js-sechead h3 { font-size: 12px; margin: 0; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); }
+.js-tw.js-tw-auto { max-height: none; min-height: 0; }
+.js-barcell { display: inline-flex; align-items: center; gap: 6px; }
+.js-bv { min-width: 44px; text-align: right; }
+.js-bar { display: inline-block; width: 90px; height: 8px; background: #27272a; border-radius: 2px; overflow: hidden; }
+.js-bar-fill { display: block; height: 100%; }
+.js-gputable tbody tr.js-low > td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
