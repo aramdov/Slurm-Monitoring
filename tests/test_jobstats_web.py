@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 from pathlib import Path
@@ -616,6 +617,81 @@ class SecurityTests(RouteTestBase):
             importlib.reload(jw)
         popen.assert_not_called()
         run.assert_not_called()
+
+
+class HardeningTests(RouteTestBase):
+    """Codex M2 review findings (reviews/2026-11-06-codex-m2-code-review.md)."""
+
+    def payload(self, **node_overrides):
+        p = json.loads(json.dumps(SYNTH))
+        p["nodes"]["n1"].update(node_overrides)
+        return p
+
+    def test_scalar_field_sent_as_dict_is_null(self):
+        row, _ = row_from(synth_line(self.payload(cpus={"0": 1}, total_memory={"0": 100})))
+        self.assertEqual(row["summary_state"], "ok")
+        self.assertIsNone(row["cpu_eff"])
+        self.assertIsNone(row["cpu_mem_peak_pct"])
+        self.assertAlmostEqual(row["gpu_pct"], 20)          # GPU fields unaffected
+
+    def test_gpu_field_sent_as_scalar_is_ignored(self):
+        row, _ = row_from(synth_line(self.payload(sm_util_percent_avg=0.5)))
+        self.assertEqual(row["summary_state"], "ok")
+        self.assertIsNone(row["sm"])
+
+    def test_huge_integer_is_null_not_an_error(self):
+        row, _ = row_from(synth_line(self.payload(gpu_utilization={"0": 10 ** 400, "1": 30})))
+        self.assertEqual(row["summary_state"], "ok")
+        self.assertAlmostEqual(row["gpu_pct"], 30)
+        self.assertEqual(jw._num(10 ** 400), None)
+
+    def test_overflowing_mean_is_finite_or_null(self):
+        row, _ = row_from(synth_line(self.payload(gpu_utilization={"0": 1e308, "1": 1e308},
+                                                  sm_util_percent_avg={"0": 1e308})))
+        self.assertEqual(row["gpu_pct"], 1e308)              # mean of two 1e308 is 1e308, not inf
+        self.assertIsNone(row["sm"])                         # 1e308 x 100 does not fit: null
+
+    def test_response_never_contains_non_finite_numbers(self):
+        line = synth_line(self.payload(gpu_utilization={"0": 1e308, "1": 1e308},
+                                       sm_util_percent_avg={"0": 1e308}, total_time=1e308, cpus=1e-300),
+                          start="1793290000", end="1793290100")
+        with patch.object(jw, "run_capped", FakeSacct(line + "\n")):
+            r = self.client.get("/api/jobstats/jobs?from=1793250000000&to=1793400000000")
+        self.assertEqual(r.status_code, 200)
+        text = r.get_data(as_text=True)
+        self.assertNotIn("Infinity", text)
+        self.assertNotIn("NaN", text)
+        json.loads(text, parse_constant=lambda c: self.fail("non-finite " + c))
+
+    def test_negative_memory_totals_are_null(self):
+        row, _ = row_from(synth_line(self.payload(total_memory=-100,
+                                                  gpu_total_memory={"0": -100, "1": 200})))
+        self.assertIsNone(row["cpu_mem_peak_pct"])
+        self.assertAlmostEqual(row["gpu_mem_peak_pct"], 30)  # GPU 0 skipped, GPU 1 60/200
+
+    def test_pending_with_estimated_start_is_not_started(self):
+        row, _ = row_from(sacct_line(state="PENDING", submit="1793000000", start="1793500000",
+                                     end="Unknown", elapsed="0"))
+        self.assertTrue(row["not_started"])
+        self.assertEqual(row["gpu_hours"], 0)
+        # still listed in a window that ends before the estimated start
+        kept = jw.filter_window([row], 1793000000, 1793100000, 1793050000)
+        self.assertEqual(len(kept), 1)
+
+    def test_timeout_kills_children_holding_stdout(self):
+        t0 = time.monotonic()
+        with self.assertRaises(jw.SourceError) as ctx:
+            jw.run_capped(["sh", "-c", "sleep 20 & sleep 20"], dict(os.environ), timeout=0.3, max_bytes=1000)
+        self.assertEqual(ctx.exception.message, "sacct timed out")
+        self.assertLess(time.monotonic() - t0, 5)
+
+    def test_result_larger_than_cache_budget_is_not_cached(self):
+        fake = FakeSacct(fixture_line("gpu8") + "\n")
+        with patch.object(jw, "run_capped", fake), patch.object(jw, "CACHE_BYTES", 100):
+            for _ in range(2):
+                self.assertEqual(self.client.get("/api/jobstats/jobs?from=1793200000000&to=1793400000000").status_code, 200)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(len(jw._explorer_cache), 0)
 
 
 if __name__ == "__main__":

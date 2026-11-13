@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -58,6 +59,7 @@ MEAN_FIELDS = {
 SEEN_FIELDS = {"fp16_seen": "fp16_util_percent_max", "fp64_seen": "fp64_util_percent_max"}
 COVERAGE_FIELDS = dict({k: f for k, (f, _) in MEAN_FIELDS.items()}, gpu_mem="gpu_used_memory")
 LOW_DUTY_PCT = 20
+NODE_SCALARS = ("cpus", "total_time", "used_memory", "total_memory")   # per node, not per GPU
 
 METRIC_KEYS = (list(MEAN_FIELDS) + list(SEEN_FIELDS) +
                ["gpu_mem_peak_b", "gpu_mem_peak_pct", "cpu_eff", "cpu_used_s", "cpu_avail_s",
@@ -87,10 +89,18 @@ def clear_caches():
 # ---------------------------------------------------------------- decoding
 
 def _num(v):
-    """A finite JSON number, else None (bools, strings, NaN and Infinity are not metrics)."""
+    """A finite JSON number, else None (bools, strings, NaN, Infinity and ints beyond float range)."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return v if math.isfinite(v) else None
+    try:
+        return v if math.isfinite(v) else None
+    except OverflowError:
+        return None
+
+
+def _finite(x):
+    """Derived values: a result that overflowed to inf or nan becomes None, so JSON stays valid."""
+    return x if x is None or math.isfinite(x) else None
 
 
 def _clean_payload(obj):
@@ -107,7 +117,10 @@ def _clean_payload(obj):
     for name, node in nodes.items():
         out = {}
         for k, v in node.items():
-            out[k] = {str(m): _num(x) for m, x in v.items()} if isinstance(v, dict) else _num(v)
+            if isinstance(v, dict) and k not in NODE_SCALARS:
+                out[k] = {str(m): _num(x) for m, x in v.items()}
+            else:
+                out[k] = _num(v)        # a scalar field sent as a dict becomes None
         clean[str(name)] = out
     return {"gpus": gpus, "total_time": total, "nodes": clean}
 
@@ -232,7 +245,8 @@ def derive_metrics(payload):
     m = {}
     for key, (field, scale) in MEAN_FIELDS.items():
         vals = _gpu_values(payload, field)
-        m[key] = sum(vals) / len(vals) * scale if vals else None
+        # divide before summing so large finite inputs cannot overflow the sum
+        m[key] = _finite(sum(v / len(vals) for v in vals) * scale) if vals else None
     for key, field in SEEN_FIELDS.items():
         vals = _gpu_values(payload, field)
         m[key] = any(v > 0 for v in vals) if vals else None
@@ -243,8 +257,8 @@ def derive_metrics(payload):
     for node in payload["nodes"].values():
         u, t = node.get("gpu_used_memory"), node.get("gpu_total_memory")
         if isinstance(u, dict) and isinstance(t, dict):
-            pcts += [u[g] / t[g] * 100 for g in u if u[g] is not None and t.get(g)]
-    m["gpu_mem_peak_pct"] = max(pcts) if pcts else None
+            pcts += [u[g] / t[g] * 100 for g in u if u[g] is not None and (t.get(g) or 0) > 0]
+    m["gpu_mem_peak_pct"] = _finite(max(pcts)) if pcts else None
 
     elapsed = payload["total_time"]
     nodes = payload["nodes"].values()
@@ -252,11 +266,13 @@ def derive_metrics(payload):
     if all(n.get("cpus") is not None and n.get("total_time") is not None for n in nodes):
         used_s = sum(n["total_time"] for n in nodes)
         avail_s = sum(n["cpus"] for n in nodes) * elapsed
-        if avail_s > 0:
-            m.update(cpu_eff=used_s / avail_s * 100, cpu_used_s=used_s, cpu_avail_s=avail_s)
+        if avail_s > 0 and math.isfinite(avail_s) and math.isfinite(used_s):
+            eff = _finite(used_s / avail_s * 100)
+            if eff is not None:
+                m.update(cpu_eff=eff, cpu_used_s=used_s, cpu_avail_s=avail_s)
     mem = [n["used_memory"] / n["total_memory"] * 100 for n in nodes
-           if n.get("used_memory") is not None and n.get("total_memory")]
-    m["cpu_mem_peak_pct"] = max(mem) if mem else None
+           if n.get("used_memory") is not None and (n.get("total_memory") or 0) > 0]
+    m["cpu_mem_peak_pct"] = _finite(max(mem)) if mem else None
 
     util = _gpu_values(payload, "gpu_utilization")
     m["low_duty_gpus"] = sum(1 for v in util if v < LOW_DUTY_PCT) if util else None
@@ -285,7 +301,8 @@ def node_details(payload):
                     gpus.setdefault(minor, {})[field] = v
         out[name] = {
             "cpus": cpus,
-            "cpu_eff": cpu_s / (cpus * elapsed) * 100 if cpus and cpu_s is not None and elapsed else None,
+            "cpu_eff": _finite(cpu_s / (cpus * elapsed) * 100)
+                       if (cpus or 0) > 0 and cpu_s is not None and elapsed and math.isfinite(cpus * elapsed) else None,
             "mem_peak_b": node.get("used_memory"),
             "mem_total_b": node.get("total_memory"),
             "gpus": dict(sorted(gpus.items(), key=lambda kv: (len(kv[0]), kv[0]))),
@@ -297,7 +314,8 @@ def build_row(rec, now_s):
     """sacct record -> (API row, payload or None)."""
     state, reason, payload = decode_summary(rec["comment"])
     alloc_gpus, alloc_cpus = parse_alloc_tres(rec["tres"])
-    not_started = rec["start"] is None
+    # sacct can show an estimated Start for a pending job; that job has not run.
+    not_started = rec["start"] is None or rec["state"].startswith("PENDING")
     array_job, _, array_task = rec["jobid"].partition("_")
     row = {
         "key": f"{rec['jobid']}@{rec['submit']}",
@@ -399,13 +417,20 @@ def run_capped(argv, env, timeout, max_bytes):
     """Run argv (no shell); return stdout text. Kills the process on timeout or byte cap."""
     timed_out = []
 
+    def kill_group():
+        # sacct runs in its own session, so this also reaches any child still holding stdout
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     def kill():
         timed_out.append(True)
-        proc.kill()
+        kill_group()
 
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL, env=env)
+                                stdin=subprocess.DEVNULL, env=env, start_new_session=True)
     except OSError as e:
         raise SourceError(f"cannot run {argv[0]}: {e.strerror or e}")
     timer = threading.Timer(timeout, kill)
@@ -418,7 +443,7 @@ def run_capped(argv, env, timeout, max_bytes):
                 break
             total += len(b)
             if total > max_bytes:
-                proc.kill()
+                kill_group()
                 proc.wait()
                 raise SourceError("too_large")
             chunks.append(b)
@@ -466,11 +491,12 @@ def explorer_rows(from_ms, to_ms):
     records, unparsed = parse_sacct(text)
     rows = [build_row(rec, now)[0] for rec in records]
     size = len(text) * 3
+    if size > CACHE_BYTES:              # one result over the whole budget is served, not cached
+        return rows, unparsed
     with _cache_lock:
         _explorer_cache[q] = (now, size, rows, unparsed)
         _explorer_cache.move_to_end(q)
-        while len(_explorer_cache) > CACHE_ENTRIES or (
-                len(_explorer_cache) > 1 and sum(v[1] for v in _explorer_cache.values()) > CACHE_BYTES):
+        while len(_explorer_cache) > CACHE_ENTRIES or sum(v[1] for v in _explorer_cache.values()) > CACHE_BYTES:
             _explorer_cache.popitem(last=False)
     return rows, unparsed
 
