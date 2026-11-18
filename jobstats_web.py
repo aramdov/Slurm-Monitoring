@@ -6,6 +6,7 @@ network call. Contract: jobstats step 10 spec (sections 4-7).
 """
 import base64
 import binascii
+import gzip
 import json
 import logging
 import math
@@ -19,7 +20,7 @@ import zlib
 from collections import Counter, OrderedDict
 from functools import wraps
 
-from flask import Blueprint, current_app, jsonify, request, send_from_directory
+from flask import Blueprint, Response, current_app, jsonify, request, send_from_directory
 
 import config
 import jobstats_prom
@@ -37,7 +38,8 @@ SACCT_MAX_BYTES = 32 * 1024 ** 2
 B64_MAX = 2_800_000               # base64 chars of one AdminComment payload
 JSON_MAX = 2 * 1024 ** 2          # decompressed bytes of one payload
 MAX_SPAN_MS = 90 * 86400 * 1000
-MAX_ROWS = 5000
+MAX_ROWS = 60000
+GZIP_MIN_BYTES = 65536
 CACHE_TTL_S = 60
 CACHE_ENTRIES = 8
 CACHE_BYTES = 64 * 1024 ** 2
@@ -515,6 +517,16 @@ def _envelope(body, source="sacct"):
     return dict(body, generated_at=int(time.time() * 1000), source=source)
 
 
+def _json_response(body):
+    """Compact JSON; gzip level 6 when the client accepts it and the body exceeds GZIP_MIN_BYTES."""
+    data = json.dumps(body, separators=(",", ":")).encode()
+    headers = {"Vary": "Accept-Encoding"}
+    if "gzip" in request.headers.get("Accept-Encoding", "") and len(data) > GZIP_MIN_BYTES:
+        data = gzip.compress(data, 6)
+        headers["Content-Encoding"] = "gzip"
+    return Response(data, content_type="application/json", headers=headers)
+
+
 def _error(message, status, retry_after=None):
     resp = jsonify({"error": message})
     resp.status_code = status
@@ -566,11 +578,12 @@ def api_jobstats_jobs():
     counts["unparsed"] = unparsed
     counts["not_started"] = sum(1 for r in selected if r["not_started"])
     selected.sort(key=_sort_key, reverse=True)
-    return jsonify(_envelope({
+    return _json_response(_envelope({
         "jobs": selected[:MAX_ROWS],
         "counts": counts,
         "window": {"from": from_ms, "to": to_ms},
         "truncated": len(selected) > MAX_ROWS,
+        "total": len(selected),
     }))
 
 

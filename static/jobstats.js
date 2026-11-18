@@ -241,7 +241,7 @@
     st.dataFor = sig;
     st.nowS = body.generated_at / 1000;
     st.cache = null;
-    setMsg(body.truncated ? "Showing the first 5,000 jobs of this range. Narrow the range to see the rest." : null, body.truncated);
+    setMsg(body.truncated ? "Showing the newest " + C.fmtNum(body.jobs.length) + " of " + C.fmtNum(body.total) + " jobs in this range. Narrow the range to see the rest." : null, body.truncated);
     $("#js-updated").textContent = "sacct at " + new Date(body.generated_at).toLocaleTimeString("en-GB", { hour12: false });
     if (!$("#js-main").hidden) render();
   }

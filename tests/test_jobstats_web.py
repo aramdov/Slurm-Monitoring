@@ -459,6 +459,49 @@ class LimitTests(RouteTestBase):
         self.assertEqual(len(body["jobs"]), 10)
         self.assertEqual(body["counts"]["missing"], 11)
         self.assertEqual(body["jobs"][0]["jobid"], "11")    # sorted by end desc
+        self.assertEqual(body["total"], 11)
+
+    def test_max_rows_is_60000(self):
+        self.assertEqual(jw.MAX_ROWS, 60000)
+
+    def test_not_truncated_has_total(self):
+        text = "".join(sacct_line(jobid=str(i), start=str(1793000000 + i), end=str(1793001000 + i)) + "\n"
+                       for i in range(1, 4))
+        with patch.object(jw, "run_capped", FakeSacct(text)):
+            body = self.client.get("/api/jobstats/jobs?from=1793000000000&to=1793086400000").get_json()
+        self.assertFalse(body["truncated"])
+        self.assertEqual(body["total"], 3)
+        self.assertEqual(len(body["jobs"]), 3)
+
+    URL = "/api/jobstats/jobs?from=1793000000000&to=1793086400000"
+
+    def _big_text(self, n=400):
+        return "".join(sacct_line(jobid=str(i), name="train-" + "x" * 200, start=str(1793000000 + i),
+                                  end=str(1793001000 + i)) + "\n" for i in range(1, n + 1))
+
+    def test_gzip_when_accepted_and_large(self):
+        with patch.object(jw, "run_capped", FakeSacct(self._big_text())):
+            plain = self.client.get(self.URL).get_json()
+            r = self.client.get(self.URL, headers={"Accept-Encoding": "gzip, deflate"})
+        self.assertEqual(r.headers.get("Content-Encoding"), "gzip")
+        self.assertIn("Accept-Encoding", r.headers.get("Vary", ""))
+        self.assertTrue(r.headers["Content-Type"].startswith("application/json"))
+        self.assertGreater(len(gzip.decompress(r.data)), 65536)
+        body = json.loads(gzip.decompress(r.data))
+        for k in ("jobs", "total", "counts", "truncated", "window"):
+            self.assertEqual(body[k], plain[k])
+
+    def test_no_gzip_without_header_or_small(self):
+        with patch.object(jw, "run_capped", FakeSacct(self._big_text())):
+            r = self.client.get(self.URL)
+        self.assertIsNone(r.headers.get("Content-Encoding"))
+        self.assertIn("Accept-Encoding", r.headers.get("Vary", ""))
+        self.assertEqual(r.get_json()["total"], 400)
+        jw.clear_caches()
+        with patch.object(jw, "run_capped", FakeSacct(self._big_text(1))):
+            r = self.client.get(self.URL, headers={"Accept-Encoding": "gzip"})
+        self.assertIsNone(r.headers.get("Content-Encoding"))
+        self.assertEqual(r.get_json()["total"], 1)
 
     def test_slot_released_after_failure(self):
         with patch.object(jw, "run_capped", FakeSacct(exc=jw.SourceError("sacct failed"))):
