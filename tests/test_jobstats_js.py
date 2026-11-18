@@ -675,7 +675,7 @@ SC_STUB = STUB_DOM + (
     "document.createElement=function(tag){const e=mk0(tag);"
     "Object.defineProperty(e,'innerHTML',{set(v){__inner.push(v)},get(){return ''}});"
     "e.getBoundingClientRect=()=>({left:0,top:0,width:600,height:400});"
-    "if(tag==='canvas'){const id=__calls.length;e.__id=Math.random();const rec={};"
+    "if(tag==='canvas'){e.__id=Math.random();const rec={getImageData:()=>({image:true})};"
     "e.getContext=()=>new Proxy(rec,{get(t,p){if(p in t)return t[p];"
     "return (...a)=>{__calls.push({c:e.__id,m:String(p),a})}},set(t,p,v){t[p]=v;return true}});}"
     "return e};"
@@ -803,3 +803,34 @@ class JsPageWiringTests(unittest.TestCase):
         self.assertIn('size: "gpuh"', self.js)
         self.assertIn('split: "0"', self.js)
         self.assertIn("JobstatsScatter.render(", self.js)
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class JsScatterReviewFixTests(unittest.TestCase):
+    """Final-review fixes: pointer scaling and hover cost."""
+    render = JsScatterRenderTests.render
+
+    def test_click_scales_to_drawn_size(self):
+        # laid out at 600 px wide; the canvas is later shown at 300 px without a resize event
+        rows = [sc_row("only", gpu_pct=80, sm=50)]
+        body = ("const cv = byTag(c, 'canvas')[0]; const a = arcs[0].a; const got = [];"
+                "self.__open = (r) => got.push(r.jobid);"
+                "cv.getBoundingClientRect = () => ({left: 0, top: 0, width: 300, height: cv.__h / 2});"
+                "cv.__h = Number(cv.style.height.replace('px', ''));"
+                "cv.listeners.click.forEach(f => f({clientX: a[0] / 2, clientY: a[1] / 2}));"
+                "return got;")
+        self.assertEqual(self.render(rows, body, {"size": "equal"}), ["only"])
+
+    def test_hover_does_not_redraw_every_dot(self):
+        rows = [sc_row(str(i), gpu_pct=i % 100, sm=(i * 7) % 100) for i in range(300)]
+        body = ("global.requestAnimationFrame = (f) => f();"
+                "const cv = byTag(c, 'canvas')[0]; const a = arcs[0].a; const before = arcs.length;"
+                "const hh = Number(cv.style.height.replace('px', ''));"
+                "cv.getBoundingClientRect = () => ({left: 0, top: 0, width: 600, height: hh});"
+                "cv.listeners.pointermove.forEach(f => f({clientX: a[0], clientY: a[1]}));"
+                "const after = __calls.filter(x => x.m === 'arc').length;"
+                "return {before, added: after - before, put: __calls.filter(x => x.m === 'putImageData').length};")
+        out = self.render(rows, body, {"size": "equal"})
+        self.assertEqual(out["before"], 300)
+        self.assertEqual(out["added"], 1)      # only the highlight ring
+        self.assertEqual(out["put"], 1)

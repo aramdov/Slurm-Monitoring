@@ -144,10 +144,12 @@
       const pw = w - ML - MR, ph = h - MT - MB;
       p.sx = (v) => ML + clamp(v) / 100 * pw;
       p.sy = (v) => MT + (1 - clamp(v) / 100) * ph;
-      p.dots = p.pts.map((r) => ({ x: p.sx(r.gpu_pct), y: p.sy(r.sm), r: C.scatterRadius(r.gpu_hours, maxH, opts.size), row: r }))
+      p.dots = p.pts.map((r) => ({ x: p.sx(r.gpu_pct), y: p.sy(r.sm), r: C.scatterRadius(r.gpu_hours, maxH, opts.size), row: r,
+                                   color: colors.colorOf(r), marks: C.scatterMarks(r) }))
         .map((d, i) => [d, i]).sort((a, b) => b[0].r - a[0].r || a[1] - b[1]).map((x) => x[0]);
       p.index = C.scatterIndex(p.dots);
       p.hl = null;
+      p.base = null;
       return dpr;
     }
 
@@ -182,8 +184,7 @@
       ctx.fillText("SM = duty (reference)", x1 - 4, y1 + 4);
 
       for (const d of p.dots) {
-        const color = colors.colorOf(d.row);
-        const m = C.scatterMarks(d.row);
+        const color = d.color, m = d.marks;
         ctx.beginPath();
         ctx.arc(d.x, d.y, d.r, 0, 2 * Math.PI);
         if (m.hollow) {
@@ -194,11 +195,26 @@
         ctx.globalAlpha = 1;
         if (m.ring) { ctx.lineWidth = 1.5; ctx.strokeStyle = RING; ctx.stroke(); }
       }
-      if (p.hl) {
-        ctx.beginPath();
-        ctx.arc(p.hl.x, p.hl.y, p.hl.r + 2.5, 0, 2 * Math.PI);
-        ctx.lineWidth = 2; ctx.strokeStyle = "#fafafa"; ctx.stroke();
-      }
+      try { p.base = ctx.getImageData(0, 0, p.canvas.width, p.canvas.height) || null; } catch (e) { p.base = null; }
+      drawHighlight(p, ctx);
+    }
+
+    function drawHighlight(p, ctx) {
+      if (!p.hl) return;
+      ctx.beginPath();
+      ctx.arc(p.hl.x, p.hl.y, p.hl.r + 2.5, 0, 2 * Math.PI);
+      ctx.lineWidth = 2; ctx.strokeStyle = "#fafafa"; ctx.stroke();
+    }
+
+    // Hover: restore the saved base drawing and add the ring, instead of redrawing every dot.
+    function rehighlight(p) {
+      const ctx = p.canvas.getContext("2d");
+      if (!ctx || !p.base) { draw(p, root.devicePixelRatio || 1); return; }
+      const dpr = p.canvas.width / p.w;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.putImageData(p.base, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawHighlight(p, ctx);
     }
 
     function showTip(p, d, cx, cy) {
@@ -216,8 +232,10 @@
     }
 
     function hitAt(p, e) {
+      // Dots live in the layout's CSS-px space; the canvas may be shown at another size since then.
       const rect = p.canvas.getBoundingClientRect();
-      return C.scatterHit(p.index, e.clientX - rect.left, e.clientY - rect.top);
+      const kx = rect.width > 0 ? p.w / rect.width : 1, ky = rect.height > 0 ? p.h / rect.height : 1;
+      return C.scatterHit(p.index, (e.clientX - rect.left) * kx, (e.clientY - rect.top) * ky);
     }
 
     function bind(p) {
@@ -234,14 +252,14 @@
           const d = hitAt(p, last);
           if (d !== p.hl) {
             p.hl = d;
-            draw(p, root.devicePixelRatio || 1);
+            rehighlight(p);
             p.canvas.style.cursor = d ? "pointer" : "";
           }
           showTip(p, d, last.clientX, last.clientY);
         });
       });
       p.canvas.addEventListener("pointerleave", () => {
-        if (p.hl) { p.hl = null; draw(p, root.devicePixelRatio || 1); }
+        if (p.hl) { p.hl = null; rehighlight(p); }
         tip.hidden = true;
       });
       p.canvas.addEventListener("click", (e) => {
