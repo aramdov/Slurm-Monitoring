@@ -531,3 +531,138 @@ class JsTimeseriesTests(unittest.TestCase):
         self.assertLess(html.index("jobstats-core.js"), html.index("jobstats-charts.js"))
         self.assertLess(html.index("jobstats-charts.js"), html.index('src="jobstats.js'))
 
+
+
+def sc_row(jobid, **kw):
+    """Synthetic Explorer row with the fields the scatter helpers read."""
+    r = {"jobid": jobid, "name": "train", "array_job": None, "not_started": False, "alloc_gpus": 1,
+         "end": 1793003700, "summary_state": "ok", "gpu_pct": 50.0, "sm": 30.0, "gpu_hours": 1.0,
+         "low_duty_gpus": 0, "coverage": {"gpu_pct": 1.0, "sm": 1.0}, "summary_gpus": 1}
+    r.update(kw)
+    return r
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class JsScatterTests(unittest.TestCase):
+    def test_split_reasons_and_order(self):
+        rows = [
+            sc_row("ns", not_started=True, alloc_gpus=0, end=None, summary_state="missing", gpu_hours=0),
+            sc_row("cpu", alloc_gpus=0, end=None, summary_state="missing", gpu_hours=0),
+            sc_row("run", end=None, summary_state="missing", gpu_hours=4.0),
+            sc_row("p1", gpu_hours=2.0),
+            sc_row("nosum", summary_state="short", gpu_hours=0.5),
+            sc_row("nosm", sm=None, gpu_hours=3.0),
+            sc_row("p2", gpu_hours=6.0),
+        ]
+        out = run_js("return core.scatterSplit(data);", rows)
+        ex = out["excluded"]
+        self.assertEqual(ex["not_started"]["jobs"], 1)
+        self.assertEqual(ex["cpu_only"]["jobs"], 1)
+        self.assertEqual(ex["running"], {"jobs": 1, "gpu_hours": 4.0})
+        self.assertEqual(ex["no_summary"], {"jobs": 1, "gpu_hours": 0.5})
+        self.assertEqual(ex["no_value"], {"jobs": 1, "gpu_hours": 3.0})
+        self.assertEqual([r["jobid"] for r in out["points"]], ["p1", "p2"])
+        self.assertEqual(out["plotted"], {"jobs": 2, "gpu_hours": 8.0})
+        self.assertEqual(out["total_gpu_hours"], 15.5)
+
+    def test_split_missing_gpu_pct_is_no_value(self):
+        out = run_js("return core.scatterSplit(data);", [sc_row("a", gpu_pct=None)])
+        self.assertEqual(out["excluded"]["no_value"]["jobs"], 1)
+        self.assertEqual(out["points"], [])
+
+    def test_scatter_empty(self):
+        out = run_js("return core.scatterSplit([]);", None)
+        self.assertEqual(out["plotted"], {"jobs": 0, "gpu_hours": 0})
+        self.assertEqual(out["points"], [])
+        self.assertEqual(out["total_gpu_hours"], 0)
+
+    def colors(self, rows, mode="name"):
+        body = ("const c = core.scatterColors(data, %s);"
+                "return {legend: c.legend, other: c.other_groups, of: data.map(c.colorOf),"
+                " palette: core.SCATTER_COLORS, gray: core.SCATTER_OTHER};") % json.dumps(mode)
+        return run_js(body, rows)
+
+    def test_colors_top8_and_ties(self):
+        # groups g0..g9 with gpu_hours 10..1, except g6 and g7 both 3 -> key order decides
+        hours = [10, 9, 8, 7, 6, 5, 3, 3, 2, 1]
+        rows = [sc_row(str(i), name="g%d" % i, gpu_hours=h) for i, h in enumerate(hours)]
+        rows[7]["name"] = "a-tie"      # "a-tie" < "g6": comes first among the tied pair
+        out = self.colors(rows)
+        self.assertEqual([e["key"] for e in out["legend"]], ["g0", "g1", "g2", "g3", "g4", "g5", "a-tie", "g6"])
+        self.assertEqual([e["color"] for e in out["legend"]], out["palette"])
+        self.assertEqual(out["other"], 2)
+        self.assertEqual(out["of"][8], out["gray"])
+        self.assertEqual(out["of"][9], out["gray"])
+        self.assertEqual(out["of"][0], out["palette"][0])
+        self.assertEqual(out["legend"][0]["gpu_hours"], 10)
+
+    def test_palette_values(self):
+        out = self.colors([])
+        self.assertEqual(out["palette"], ["#60a5fa", "#f59e0b", "#34d399", "#f87171",
+                                          "#a78bfa", "#22d3ee", "#d4a373", "#94a3b8"])
+        self.assertEqual(out["gray"], "#6b7280")
+        self.assertEqual(out["legend"], [])
+        self.assertEqual(out["other"], 0)
+
+    def test_colors_follow_mode(self):
+        rows = [sc_row("1", name="run-1"), sc_row("2", name="run-2")]
+        self.assertEqual(len(self.colors(rows, "name")["legend"]), 2)
+        fam = self.colors(rows, "family")["legend"]
+        self.assertEqual([e["key"] for e in fam], ["run-#"])
+        self.assertEqual(fam[0]["gpu_hours"], 2)
+
+    def test_colors_empty_and_markup_names(self):
+        out = self.colors([sc_row("1", name=""), sc_row("2", name="<b>&x", gpu_hours=2)])
+        self.assertEqual([e["key"] for e in out["legend"]], ["<b>&x", ""])
+        self.assertEqual(out["of"], [out["palette"][1], out["palette"][0]])
+
+    def test_radius(self):
+        out = run_js("const r = core.scatterRadius;"
+                     "return [r(100, 100, 'gpuh'), r(25, 100, 'gpuh'), r(0.0001, 100, 'gpuh'),"
+                     " r(5, 0, 'gpuh'), r(5, 5, 'equal'), r(0, 0, 'gpuh'), r(7, 7, 'gpuh')];", None)
+        self.assertEqual(out[0], 18)
+        self.assertAlmostEqual(out[1], 9)
+        self.assertEqual(out[2:], [2, 2, 3, 2, 18])
+
+    def test_bucket(self):
+        out = run_js("return [1, 2, 7, 8, 16].map(core.scatterBucket);", None)
+        self.assertEqual(out, ["1", "2-7", "2-7", "8+", "8+"])
+
+    def test_marks(self):
+        rows = [
+            sc_row("ring", low_duty_gpus=1, alloc_gpus=8, summary_gpus=8),
+            sc_row("cov", coverage={"gpu_pct": 1, "sm": 0.5}),
+            sc_row("cov2", coverage={"gpu_pct": 0.75, "sm": 1}),
+            sc_row("fewer", alloc_gpus=8, summary_gpus=6),
+            sc_row("ok"),
+            sc_row("nullcov", coverage=None),
+            sc_row("nullcov_fewer", coverage=None, alloc_gpus=4, summary_gpus=2),
+        ]
+        out = run_js("return data.map(core.scatterMarks);", rows)
+        self.assertEqual(out, [
+            {"ring": True, "hollow": False}, {"ring": False, "hollow": True}, {"ring": False, "hollow": True},
+            {"ring": False, "hollow": True}, {"ring": False, "hollow": False}, {"ring": False, "hollow": False},
+            {"ring": False, "hollow": True},
+        ])
+
+    def hit(self, dots, points):
+        body = ("const idx = core.scatterIndex(data.dots);"
+                "return data.points.map(([x, y]) => { const d = core.scatterHit(idx, x, y);"
+                " return d ? d.row.jobid : null; });")
+        return run_js(body, {"dots": dots, "points": points})
+
+    def test_hit(self):
+        dots = [{"x": 100, "y": 100, "r": 18, "row": {"jobid": "big"}},
+                {"x": 130, "y": 100, "r": 2, "row": {"jobid": "small"}}]
+        self.assertEqual(self.hit(dots, [[115, 100], [124, 100], [100, 140]]), ["big", "small", None])
+        # both hit at (113, 100): big 13 <= 18, mid 7 <= 10 -> nearest centre wins
+        mid = [dots[0], {"x": 120, "y": 100, "r": 10, "row": {"jobid": "mid"}}]
+        self.assertEqual(self.hit(mid, [[113, 100], [109, 100]]), ["mid", "big"])
+        twin = dots + [{"x": 100, "y": 100, "r": 5, "row": {"jobid": "twin"}}]
+        self.assertEqual(self.hit(twin, [[100, 100]]), ["big"])
+
+    def test_hit_across_cells_and_empty(self):
+        # a dot of radius 40 is hittable 39 px away, past the 24 px grid cell
+        dots = [{"x": 10, "y": 10, "r": 40, "row": {"jobid": "huge"}}]
+        self.assertEqual(self.hit(dots, [[49, 10], [10, 51]]), ["huge", None])
+        self.assertEqual(self.hit([], [[0, 0]]), [None])

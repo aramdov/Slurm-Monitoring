@@ -505,11 +505,123 @@
     return text + (body.agg === "max" ? ", peak per window" : ", average per window");
   }
 
+  /* ---------- scatter (Explorer "Scatter" view) ---------- */
+
+  // Same 8 colors as JobstatsCharts.COLORS; groups past the 8th share SCATTER_OTHER.
+  const SCATTER_COLORS = ["#60a5fa", "#f59e0b", "#34d399", "#f87171", "#a78bfa", "#22d3ee", "#d4a373", "#94a3b8"];
+  const SCATTER_OTHER = "#6b7280";
+  const SCATTER_REASONS = ["not_started", "cpu_only", "running", "no_summary", "no_value"];
+
+  function scatterReason(r) {
+    if (r.not_started) return "not_started";
+    if (!(r.alloc_gpus > 0)) return "cpu_only";
+    if (r.end == null) return "running";
+    if (r.summary_state !== "ok") return "no_summary";
+    if (r.gpu_pct == null || r.sm == null) return "no_value";
+    return null;
+  }
+
+  /* Rows that become dots, and the rest counted by the first reason that excludes them. */
+  function scatterSplit(rows) {
+    const excluded = {};
+    for (const k of SCATTER_REASONS) excluded[k] = { jobs: 0, gpu_hours: 0 };
+    const points = [];
+    const plotted = { jobs: 0, gpu_hours: 0 };
+    let total = 0;
+    for (const r of rows) {
+      const h = r.gpu_hours || 0;
+      total += h;
+      const why = scatterReason(r);
+      const bin = why ? excluded[why] : plotted;
+      bin.jobs += 1;
+      bin.gpu_hours += h;
+      if (!why) points.push(r);
+    }
+    return { points, excluded, plotted, total_gpu_hours: total };
+  }
+
+  /* Top 8 groups by plotted GPU-hours get a color (ties by key); the rest are SCATTER_OTHER. */
+  function scatterColors(points, mode) {
+    const hours = new Map();
+    for (const r of points) {
+      const k = groupKey(r, mode);
+      hours.set(k, (hours.get(k) || 0) + (r.gpu_hours || 0));
+    }
+    const order = [...hours.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const colorByKey = new Map();
+    const legend = order.slice(0, SCATTER_COLORS.length).map(([key, h], i) => {
+      colorByKey.set(key, SCATTER_COLORS[i]);
+      return { key, gpu_hours: h, color: SCATTER_COLORS[i] };
+    });
+    return {
+      colorOf: (r) => colorByKey.get(groupKey(r, mode)) || SCATTER_OTHER,
+      legend,
+      other_groups: Math.max(0, order.length - SCATTER_COLORS.length),
+    };
+  }
+
+  /* Area linear in GPU-hours: the largest job gets 18 px, nothing drops below 2 px. */
+  function scatterRadius(gpuHours, maxGpuHours, size) {
+    if (size === "equal") return 3;
+    if (!(maxGpuHours > 0)) return 2;
+    return Math.max(2, 18 * Math.sqrt(Math.max(0, gpuHours || 0) / maxGpuHours));
+  }
+
+  function scatterBucket(allocGpus) {
+    return allocGpus >= 8 ? "8+" : allocGpus >= 2 ? "2-7" : "1";
+  }
+
+  function scatterMarks(r) {
+    const cov = r.coverage;
+    const partial = !!cov && ((cov.gpu_pct != null && cov.gpu_pct < 1) || (cov.sm != null && cov.sm < 1));
+    return {
+      ring: r.low_duty_gpus > 0,
+      hollow: partial || (r.summary_gpus != null && r.summary_gpus < r.alloc_gpus),
+    };
+  }
+
+  /* Grid of dot indices by cell; dots are {x, y, r, row} in pixels. */
+  function scatterIndex(dots, cell) {
+    cell = cell || 24;
+    const cells = new Map();
+    let rMax = 0;
+    dots.forEach((d, i) => {
+      const k = Math.floor(d.x / cell) + "," + Math.floor(d.y / cell);
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push(i);
+      if (d.r > rMax) rMax = d.r;
+    });
+    return { dots, cell, cells, reach: Math.max(8, rMax) };
+  }
+
+  /* Nearest dot whose centre is within max(8, r) of (x, y); ties go to the earlier dot. */
+  function scatterHit(index, x, y) {
+    const { dots, cell, cells, reach } = index;
+    const c0 = Math.floor((x - reach) / cell), c1 = Math.floor((x + reach) / cell);
+    const r0 = Math.floor((y - reach) / cell), r1 = Math.floor((y + reach) / cell);
+    let best = -1, bestD = Infinity;
+    for (let cx = c0; cx <= c1; cx++) {
+      for (let cy = r0; cy <= r1; cy++) {
+        const list = cells.get(cx + "," + cy);
+        if (!list) continue;
+        for (const i of list) {
+          const d = dots[i];
+          const dist = Math.hypot(d.x - x, d.y - y);
+          if (dist > Math.max(8, d.r)) continue;
+          if (dist < bestD || (dist === bestD && i < best)) { best = i; bestD = dist; }
+        }
+      }
+    }
+    return best < 0 ? null : dots[best];
+  }
+
   return {
     MEAN_KEYS, SEEN_KEYS, FILTER_METRICS, HOOK_LIVE_S, UNWRITTEN_GRACE_S, DASH,
     parseQuery, filterRows, isUnwritten, sortRows, sortValue,
     percentile, spread, aggregate, groupKey, groupRows,
     gpuTable, nodeRows, lifecycle, NOTE_LIMITS, jobNotes, gpuColor, summaryLabel, fmtPct, fmtNum, fmtGB, fmtElapsed, fmtGpuHours,
     TS_STEPS, TS_ORDER, tsTicks, tsTimeAxis, tsNearest, tsGpuLabels, tsStepText,
+    SCATTER_COLORS, SCATTER_OTHER, scatterSplit, scatterColors, scatterRadius, scatterBucket, scatterMarks,
+    scatterIndex, scatterHit,
   };
 });
