@@ -7,13 +7,30 @@ Label conventions are the jobstats exporters' on every cluster we run: GPU serie
 Slurm id), `instance` (`host:port`) and `minor_number`; cgroup series carry `jobid` and are filtered to
 `step="",task=""`, the job-level cgroup, as upstream jobstats does.
 """
+import json
+import math
 import re
+import socket
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 SCRAPE_S = 30
 STEPS = (30, 60, 120, 300)                          # offered on the page
 LADDER = (30, 60, 120, 300, 600, 1800, 3600)        # steps the server may move to
 AUTO_POINTS = 1500
 MAX_POINTS = 5000                                   # Prometheus itself refuses > 11,000 per series
+
+QUERY_TIMEOUT_S = 10
+DEADLINE_S = 60                                     # per request; gunicorn kills a worker at 120 s
+READ_MAX = 32 * 1024 ** 2
+DIGITS = {"%": 1, "GB": 2, "cores": 2, "W": 0}
+YMAX_FIXED = {"%": 100, "W": 1000}
+ALLOC_HEADROOM = 1.15
+
+_slot = threading.Semaphore(1)                      # one time-series request at a time
 
 RAW_ID_RE = re.compile(r"[0-9]{1,10}")
 AGGS = ("avg", "max")
@@ -91,3 +108,139 @@ def build_queries(raw_id, step_s, agg, selector=""):
     q["ram_alloc"] = f"sum(cgroup_memory_total_bytes{cg_sel})"
     q["gpu_mem_total"] = f"max(nvidia_gpu_memory_total_bytes{gpu_sel})"
     return q
+
+
+class PromError(Exception):
+    """Prometheus could not answer: busy, down, slow, refused the query or sent too much. Maps to 503."""
+
+    def __init__(self, message, busy=False):
+        super().__init__(message)
+        self.message = message
+        self.busy = busy
+
+
+def query_range(url, promql, start, end, step, timeout):
+    """POST /api/v1/query_range; returns data.result (a list of {metric, values})."""
+    data = urllib.parse.urlencode({"query": promql, "start": str(start), "end": str(end),
+                                   "step": str(step)}).encode()
+    req = urllib.request.Request(url + "/api/v1/query_range", data=data, method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(READ_MAX + 1)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.loads(e.read(65536) or b"{}").get("error", "")
+        except (ValueError, AttributeError, OSError):
+            pass
+        raise PromError(f"Prometheus answered HTTP {e.code}" + (f": {detail}" if detail else ""))
+    except (socket.timeout, TimeoutError):
+        raise PromError("Prometheus timed out")
+    except (urllib.error.URLError, OSError) as e:
+        raise PromError(f"Prometheus unreachable: {getattr(e, 'reason', e)}")
+    if len(raw) > READ_MAX:
+        raise PromError("Prometheus response too large")
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise PromError("Prometheus sent a response that is not JSON")
+    if not isinstance(body, dict) or body.get("status") != "success":
+        err = body.get("error", "unknown error") if isinstance(body, dict) else "unknown error"
+        raise PromError(f"Prometheus error: {err}")
+    result = (body.get("data") or {}).get("result")
+    return result if isinstance(result, list) else []
+
+
+def _value(v, scale, digits):
+    try:
+        x = float(v) * scale
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x):
+        return None
+    return int(round(x)) if digits == 0 else round(x, digits)
+
+
+def _points_of(series, scale, digits):
+    out = []
+    for pair in series.get("values") or ():
+        try:
+            t, v = pair
+        except (TypeError, ValueError):
+            continue
+        x = _value(v, scale, digits)
+        if x is not None:
+            out.append([int(float(t)), x])
+    return out
+
+
+def _gpu_key(metric):
+    host = str(metric.get("instance", "")).rsplit(":", 1)[0] or "?"
+    minor = str(metric.get("minor_number", "?"))
+    return host, minor
+
+
+def _minor_sort(m):
+    return (0, int(m), "") if m.isdigit() else (1, 0, m)
+
+
+def _last_scalar(result):
+    """A scalar query run as a range: the last finite value of its (single) series, else None."""
+    for series in result[:1]:
+        for _, v in reversed(series.get("values") or []):
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x):
+                return x
+    return None
+
+
+def fetch_job_series(url, raw_id, start, end, step_s, agg, selector="", deadline_s=DEADLINE_S):
+    """Run every chart's query for one job and shape the result for the job page."""
+    queries = build_queries(raw_id, step_s, agg, selector)
+    if not _slot.acquire(blocking=False):
+        raise PromError("another time-series request is running; try again", busy=True)
+    try:
+        t_end = time.monotonic() + deadline_s
+        results = {}
+        for name, promql in queries.items():
+            remaining = t_end - time.monotonic()
+            if remaining <= 0:
+                raise PromError("Prometheus queries timed out")
+            results[name] = query_range(url, promql, start, end, step_s,
+                                        min(QUERY_TIMEOUT_S, remaining))
+    finally:
+        _slot.release()
+
+    gpus = {}
+    charts = {}
+    for c in CHARTS:
+        digits = DIGITS[c["unit"]]
+        series = {}
+        for s in results.get(c["name"], []):
+            pts = _points_of(s, c["scale"], digits)
+            if c["kind"] == "gpu":
+                host, minor = _gpu_key(s.get("metric") or {})
+                key = f"{host}/{minor}"
+                gpus[key] = {"key": key, "host": host, "minor": minor}
+            else:
+                key = "job"
+            if pts:
+                series[key] = pts
+        charts[c["name"]] = {"title": c["title"], "unit": c["unit"], "kind": c["kind"],
+                             "ymax": YMAX_FIXED.get(c["unit"]), "allocated": None, "series": series}
+
+    total = _last_scalar(results.get("gpu_mem_total", []))
+    charts["gpu_mem"]["ymax"] = round(total * 1e-9, 1) if total else None
+    for name, alloc_q, scale in (("cpu", "cpu_alloc", 1), ("ram", "ram_alloc", 1e-9)):
+        alloc = _last_scalar(results.get(alloc_q, []))
+        if alloc:
+            a = round(alloc * scale, 2)
+            charts[name]["allocated"] = int(a) if a == int(a) and scale == 1 else a
+            charts[name]["ymax"] = round(a * ALLOC_HEADROOM, 2)
+
+    ordered = sorted(gpus.values(), key=lambda g: (g["host"], _minor_sort(g["minor"])))
+    return {"step_s": step_s, "agg": agg, "start": start, "end": end, "gpus": ordered, "charts": charts}
