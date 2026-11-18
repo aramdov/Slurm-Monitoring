@@ -438,10 +438,76 @@
     return out;
   }
 
+  // ---- Job page time series (charts drawn by jobstats-charts.js) ----
+  const TS_STEPS = [["30", "30 s"], ["60", "1 min"], ["120", "2 min"], ["300", "5 min"], ["auto", "auto"]];
+  const TS_MAX_POINTS = 5000;   // jobstats_prom.MAX_POINTS
+
+  // "Nice" ticks from 0 to at least max: step 1, 2, 2.5 or 5 x 10^k, at most count + 1 values.
+  function tsTicks(max, count) {
+    if (!(typeof max === "number" && max > 0 && Number.isFinite(max))) return [0, 1];
+    const raw = max / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    let step = 10 * mag;
+    for (const m of [1, 2, 2.5, 5, 10]) {
+      if (m * mag >= raw - 1e-12) { step = m * mag; break; }
+    }
+    const n = Math.ceil(max / step - 1e-9);
+    const out = [];
+    for (let i = 0; i <= n; i++) out.push(Math.round(i * step * 1e6) / 1e6);
+    return out;
+  }
+
+  // x-axis for a job of spanS seconds: hours, or minutes under 2 h. Ticks are in that unit.
+  function tsTimeAxis(spanS) {
+    const unit = spanS < 7200 ? "min" : "h";
+    const div = unit === "h" ? 3600 : 60;
+    return { unit, div, ticks: tsTicks(spanS / div, 4) };
+  }
+
+  // Index of the point whose timestamp is closest to t (points sorted by time); -1 when empty.
+  function tsNearest(points, t) {
+    if (!Array.isArray(points) || !points.length) return -1;
+    let lo = 0, hi = points.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (points[mid][0] < t) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0 && t - points[lo - 1][0] <= points[lo][0] - t) return lo - 1;
+    return lo;
+  }
+
+  // Chip and readout labels: "GPU 3" when the job ran on one host, else "gpu07/3".
+  function tsGpuLabels(gpus) {
+    const list = Array.isArray(gpus) ? gpus : [];
+    const hosts = new Set(list.map((g) => g.host));
+    const out = {};
+    for (const g of list) out[g.key] = hosts.size <= 1 ? "GPU " + g.minor : g.host + "/" + g.minor;
+    return out;
+  }
+
+  function tsStepLabel(s) {
+    if (s < 60) return s + " s";
+    if (s < 3600) return s / 60 + " min";
+    return s / 3600 + " h";
+  }
+
+  // The line above the charts that states exactly what each point is.
+  function tsStepText(body) {
+    let text = tsStepLabel(body.step_s) + " steps";
+    if (body.step_s === 30) return text + " (raw samples)";
+    if (body.coarsened && body.requested_step) {
+      text += " (" + tsStepLabel(body.requested_step) + " would exceed " + TS_MAX_POINTS + " points)";
+    } else if (body.requested_step === null) {
+      text += " (auto)";
+    }
+    return text + (body.agg === "max" ? ", peak per window" : ", average per window");
+  }
+
   return {
     MEAN_KEYS, SEEN_KEYS, FILTER_METRICS, HOOK_LIVE_S, UNWRITTEN_GRACE_S, DASH,
     parseQuery, filterRows, isUnwritten, sortRows, sortValue,
     percentile, spread, aggregate, groupKey, groupRows,
     gpuTable, nodeRows, lifecycle, NOTE_LIMITS, jobNotes, gpuColor, summaryLabel, fmtPct, fmtNum, fmtGB, fmtElapsed, fmtGpuHours,
+    TS_STEPS, tsTicks, tsTimeAxis, tsNearest, tsGpuLabels, tsStepText,
   };
 });

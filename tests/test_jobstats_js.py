@@ -433,3 +433,45 @@ class JsJobNotesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@unittest.skipUnless(NODE, "node not installed")
+class JsTimeseriesTests(unittest.TestCase):
+    def js(self, expr, data=None):
+        return run_js("return " + expr + ";", data)
+
+    def test_steps(self):
+        self.assertEqual(self.js("core.TS_STEPS"),
+                         [["30", "30 s"], ["60", "1 min"], ["120", "2 min"], ["300", "5 min"], ["auto", "auto"]])
+
+    def test_ticks(self):
+        self.assertEqual(self.js("core.tsTicks(100, 4)"), [0, 25, 50, 75, 100])
+        self.assertEqual(self.js("core.tsTicks(73.6, 4)"), [0, 20, 40, 60, 80])
+        self.assertEqual(self.js("core.tsTicks(1000, 4)"), [0, 250, 500, 750, 1000])
+        self.assertEqual(self.js("core.tsTicks(85.9, 4)"), [0, 25, 50, 75, 100])
+        self.assertEqual(self.js("core.tsTicks(0, 4)"), [0, 1])
+
+    def test_time_axis(self):
+        self.assertEqual(self.js("core.tsTimeAxis(12.2*3600)"), {"unit": "h", "div": 3600, "ticks": [0, 5, 10, 15]})
+        self.assertEqual(self.js("core.tsTimeAxis(1800)")["unit"], "min")
+        self.assertEqual(self.js("core.tsTimeAxis(1800)")["div"], 60)
+
+    def test_nearest(self):
+        pts = [[0, 1], [30, 2], [60, 3]]
+        self.assertEqual([self.js(f"core.tsNearest(data, {t})", pts) for t in (-5, 14, 16, 999)], [0, 0, 1, 2])
+        self.assertEqual(self.js("core.tsNearest([], 5)"), -1)
+
+    def test_gpu_labels(self):
+        one = [{"key": "gpu08/0", "host": "gpu08", "minor": "0"}, {"key": "gpu08/1", "host": "gpu08", "minor": "1"}]
+        self.assertEqual(self.js("core.tsGpuLabels(data)", one), {"gpu08/0": "GPU 0", "gpu08/1": "GPU 1"})
+        two = one[:1] + [{"key": "gpu07/0", "host": "gpu07", "minor": "0"}]
+        self.assertEqual(self.js("core.tsGpuLabels(data)", two), {"gpu08/0": "gpu08/0", "gpu07/0": "gpu07/0"})
+
+    def test_step_text(self):
+        t = lambda b: self.js("core.tsStepText(data)", b)  # noqa: E731
+        self.assertEqual(t({"step_s": 120, "agg": "max", "coarsened": False}), "2 min steps, peak per window")
+        self.assertEqual(t({"step_s": 30, "agg": "avg", "coarsened": False}), "30 s steps (raw samples)")
+        self.assertEqual(t({"step_s": 300, "agg": "avg", "coarsened": True, "requested_step": 30}),
+                         "5 min steps (30 s would exceed 5000 points), average per window")
+        self.assertEqual(t({"step_s": 600, "agg": "avg", "coarsened": False, "requested_step": None}),
+                         "10 min steps (auto), average per window")
+
