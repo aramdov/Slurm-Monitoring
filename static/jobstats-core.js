@@ -441,6 +441,8 @@
   // ---- Job page time series (charts drawn by jobstats-charts.js) ----
   const TS_STEPS = [["30", "30 s"], ["60", "1 min"], ["120", "2 min"], ["300", "5 min"], ["auto", "auto"]];
   const TS_MAX_POINTS = 5000;   // jobstats_prom.MAX_POINTS
+  // Chart order on the page (jobstats_prom.CHARTS). JSON object keys arrive sorted, so order lives here.
+  const TS_ORDER = ["duty", "sm", "tensor", "dram", "gpu_mem", "power", "cpu", "ram"];
 
   // "Nice" ticks from 0 to at least max: step 1, 2, 2.5 or 5 x 10^k, at most count + 1 values.
   function tsTicks(max, count) {
@@ -508,6 +510,6 @@
     parseQuery, filterRows, isUnwritten, sortRows, sortValue,
     percentile, spread, aggregate, groupKey, groupRows,
     gpuTable, nodeRows, lifecycle, NOTE_LIMITS, jobNotes, gpuColor, summaryLabel, fmtPct, fmtNum, fmtGB, fmtElapsed, fmtGpuHours,
-    TS_STEPS, tsTicks, tsTimeAxis, tsNearest, tsGpuLabels, tsStepText,
+    TS_STEPS, TS_ORDER, tsTicks, tsTimeAxis, tsNearest, tsGpuLabels, tsStepText,
   };
 });

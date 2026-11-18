@@ -475,6 +475,10 @@ class JsTimeseriesTests(unittest.TestCase):
         self.assertEqual(t({"step_s": 600, "agg": "avg", "coarsened": False, "requested_step": None}),
                          "10 min steps (auto), average per window")
 
+    def test_chart_order_matches_server(self):
+        import jobstats_prom
+        self.assertEqual(self.js("core.TS_ORDER"), [c["name"] for c in jobstats_prom.CHARTS])
+
     def test_new_scripts_parse(self):
         for name in ("jobstats-charts.js", "jobstats.js", "jobstats-core.js"):
             proc = subprocess.run([NODE, "--check", str(STATIC / name)], capture_output=True, text=True, timeout=30)

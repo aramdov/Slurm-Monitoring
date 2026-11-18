@@ -133,7 +133,10 @@
     const nGpu = keys.length || opts.allocGpus || 0;
     const charts = [];
     const grid = div("js-ts-charts");
-    for (const [name, ch] of Object.entries(body.charts || {})) {
+    const all = body.charts || {};
+    const names = C.TS_ORDER.filter((k) => all[k]).concat(Object.keys(all).filter((k) => !C.TS_ORDER.includes(k)));
+    for (const name of names) {
+      const ch = all[name];
       const isGpu = ch.kind !== "job";
       if (isGpu && opts.gpuCharts === false) continue;
       const note = ch.unit + ", " + (isGpu ? nGpu + " GPU" + (nGpu === 1 ? "" : "s") : "whole job");
