@@ -143,9 +143,9 @@ def explorer_rows():
     def r(**kw):
         return row_from(sacct_line(**kw), NOW_S)[0]
     return [
-        r(jobid="3337", name="Bind_Eval", nodes="b200-8c", tres="cpu=8"),
+        r(jobid="3337", user="bob", name="Bind_Eval", nodes="b200-8c", tres="cpu=8"),
         r(jobid="2645_0", jobid_raw="2645", name="genmol-s1", nodes="b200-8"),
-        r(jobid="2645_1", jobid_raw="2647", name="genmol-s1", nodes="b200-8b", state="FAILED"),
+        r(jobid="2645_1", jobid_raw="2647", user="bobby", name="genmol-s1", nodes="b200-8b", state="FAILED"),
         r(jobid="26450", name="other", nodes="b200-8d", state="TIMEOUT",
           tres="cpu=64,gres/gpu=8", elapsed="36000", comment=encode(FIXTURES["gpu8"]["payload"])),
         r(jobid="4001", name="gone", state="CANCELLED by 1001", start="Unknown", elapsed="0",
@@ -179,6 +179,9 @@ class JsExplorerTests(unittest.TestCase):
             "node:b200-8c": ["3337", "4002", "4003", "4004"],
             "node:b200-8?": [],             # only * is a wildcard
             "node:b200-8* gen": ["2645_0", "2645_1"],
+            "user:bob": ["3337"],           # exact user, so bobby does not match
+            "user:BOB*": ["3337", "2645_1"],
+            "user:bob user:alice gen": ["2645_0"],  # users OR, then AND with name text
             "state:failed": ["2645_1"],
             "state:failed state:timeout": ["2645_1", "26450"],
             "state:cancelled": ["4001"],    # a state: token shows never-started rows

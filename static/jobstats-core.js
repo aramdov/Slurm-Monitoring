@@ -11,7 +11,7 @@
 
   const MEAN_KEYS = ["gpu_pct", "sm", "tc", "dram", "occ", "fp32", "int", "power_w"];
   const SEEN_KEYS = ["fp16_seen", "fp64_seen"];
-  const TOKEN_KINDS = ["id", "node", "state", "summary"];
+  const TOKEN_KINDS = ["id", "user", "node", "state", "summary"];
   // Job-level values the "below / at least" filter can use. max 100 = a percentage.
   const FILTER_METRICS = [
     { key: "gpu_pct", label: "GPU %", max: 100 }, { key: "sm", label: "SM %", max: 100 },
@@ -31,7 +31,7 @@
   // ------------------------------------------------------------------ search and filters
 
   function parseQuery(q) {
-    const out = { terms: [], id: [], node: [], state: [], summary: [] };
+    const out = { terms: [], id: [], user: [], node: [], state: [], summary: [] };
     for (const tok of String(q || "").trim().split(/\s+/)) {
       if (!tok) continue;
       const m = /^([a-z]+):(.*)$/i.exec(tok);
@@ -55,6 +55,11 @@
       return re.test(row.jobid) || re.test(row.jobid_raw);
     }
     return row.jobid === v || row.jobid_raw === v;
+  }
+
+  function userMatch(row, v) {
+    const u = (row.user || "").toLowerCase();
+    return v.includes("*") ? globRe(v).test(u) : u === v;
   }
 
   function nodeMatch(row, v) {
@@ -96,6 +101,7 @@
         for (const t of p.terms) if (!name.includes(t)) return false;
       }
       if (p.id.length && !p.id.some((v) => idMatch(r, v))) return false;
+      if (p.user.length && !p.user.some((v) => userMatch(r, v))) return false;
       if (p.node.length && !p.node.some((v) => nodeMatch(r, v))) return false;
       if (p.state.length && !p.state.some((v) => r.state.toLowerCase().startsWith(v))) return false;
       if (p.summary.length && !p.summary.some((v) => summaryMatch(r, v, nowS))) return false;
@@ -121,6 +127,7 @@
 
   const SORT_VALUES = {
     name: (r) => r.name.toLowerCase(),
+    user: (r) => (r.user || "").toLowerCase(),
     state: (r) => r.state,
     nodes: (r) => r.nodes.join(","),
     summary_state: (r) => r.summary_state,

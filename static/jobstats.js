@@ -89,6 +89,7 @@
 
   const COLS = [
     { k: "jobid", h: "Job ID", cell: jobLink, tot: () => "Visible" },
+    { k: "user", h: "User", cls: "user", cell: (r) => r.user || DASH },
     { k: "name", h: "Name", cls: "name", cell: (r) => r.name, title: (r) => r.name,
       tot: (a, rows) => C.fmtNum(a.jobs) + " jobs" +
         (rows.length > a.jobs ? " (+" + C.fmtNum(rows.length - a.jobs) + " never started, not counted)" : "") },
@@ -654,7 +655,7 @@
       el("h2", { class: "js-jobtitle" }, r.name),
       el("div", { class: "js-jobhead" },
         kv("Job ID", r.jobid + (r.jobid !== r.jobid_raw ? " (raw " + r.jobid_raw + ")" : "")),
-        kv("State", stateCell(r.state)), kv("Nodes", r.nodes.join(", ") || DASH),
+        kv("User", r.user || DASH), kv("State", stateCell(r.state)), kv("Nodes", r.nodes.join(", ") || DASH),
         kv("Elapsed", C.fmtElapsed(r.elapsed_s)), kv("GPUs / CPUs", r.alloc_gpus + " / " + r.alloc_cpus),
         kv("GPU-hours", C.fmtGpuHours(r.gpu_hours)), kv("Summary", pill(r)),
         kv("GPU %", badge(r.gpu_pct)), kv("CPU eff", C.fmtPct(r.cpu_eff)),
@@ -777,7 +778,7 @@
     const b = e.target.closest("button[data-k]");
     if (!b) return;
     const k = b.dataset.k;
-    const textual = ["name", "state", "nodes", "summary_state"].includes(k);
+    const textual = ["user", "name", "state", "nodes", "summary_state"].includes(k);
     update(st.sort === k ? { dir: st.dir === "asc" ? "desc" : "asc" } : { sort: k, dir: textual ? "asc" : "desc" });
     const nb = document.querySelector('#js-jobs button[data-k="' + k + '"]');
     if (nb) nb.focus();
