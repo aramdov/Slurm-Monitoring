@@ -21,6 +21,9 @@ from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
+import config
+import jobstats_prom
+
 log = logging.getLogger(__name__)
 
 bp = Blueprint("jobstats", __name__)
@@ -39,6 +42,7 @@ CACHE_TTL_S = 60
 CACHE_ENTRIES = 8
 CACHE_BYTES = 64 * 1024 ** 2
 DETAIL_ENTRIES = 64
+TS_ENTRIES = 16                   # finished jobs' time-series bodies (~1 MB each at most)
 SUMMARY_STATES = ("ok", "short", "none", "invalid", "other", "missing")
 
 JOBID_RE = re.compile(r"[0-9]{1,10}(_[0-9]{1,10})?")
@@ -66,9 +70,10 @@ METRIC_KEYS = (list(MEAN_FIELDS) + list(SEEN_FIELDS) +
                 "cpu_mem_peak_pct", "low_duty_gpus", "coverage", "field_gpus", "summary_gpus"])
 
 _sacct_slot = threading.Semaphore(1)     # admission: one sacct at a time, shared by all routes
-_cache_lock = threading.Lock()           # guards the two dicts below; never held during I/O
+_cache_lock = threading.Lock()           # guards the dicts below; never held during I/O
 _explorer_cache = OrderedDict()          # (q_from_s, q_to_s) -> (ts, size, rows, unparsed)
 _detail_cache = OrderedDict()            # key -> (ts, body)
+_ts_cache = OrderedDict()                # (jobid, submit, step_s, agg) -> body, finished jobs only
 
 
 class SourceError(Exception):
@@ -84,6 +89,7 @@ def clear_caches():
     with _cache_lock:
         _explorer_cache.clear()
         _detail_cache.clear()
+        _ts_cache.clear()
 
 
 # ---------------------------------------------------------------- decoding
@@ -567,25 +573,29 @@ def api_jobstats_jobs():
     }))
 
 
-@bp.route("/api/jobstats/job/<jobid>")
-@_contained
-def api_jobstats_job(jobid):
+def _job_args(jobid):
+    """(submit, None) for a valid id and submit, else (None, error response)."""
     if not JOBID_RE.fullmatch(jobid):
-        return _error("bad job id", 400)
+        return None, _error("bad job id", 400)
     submit = _int_arg("submit")
     if submit is None or not 86400 < submit <= time.time() + 86400:
-        return _error("submit (epoch s) is required", 400)
+        return None, _error("submit (epoch s) is required", 400)
+    return submit, None
+
+
+def job_detail(jobid, submit):
+    """{"job": row, "nodes": ...} for one (jobid, submit), through the 60 s detail cache; None if absent."""
     key = f"{jobid}@{submit}"
     now = time.time()
     with _cache_lock:
         hit = _detail_cache.get(key)
         if hit and now - hit[0] < CACHE_TTL_S:
             _detail_cache.move_to_end(key)
-            return jsonify(_envelope(hit[1]))
+            return hit[1]
     records, _ = parse_sacct(sacct(["-j", jobid, "-S", _iso_utc(submit - 86400), "-E", "now"]))
     match = [r for r in records if r["jobid"] == jobid and r["submit"] == submit]
     if not match:
-        return _error("job not found", 404)
+        return None
     row, payload = build_row(match[0], now)
     body = {"job": row, "nodes": node_details(payload) if payload else {}}
     with _cache_lock:
@@ -593,4 +603,69 @@ def api_jobstats_job(jobid):
         _detail_cache.move_to_end(key)
         while len(_detail_cache) > DETAIL_ENTRIES:
             _detail_cache.popitem(last=False)
-    return jsonify(_envelope(body))
+    return body
+
+
+@bp.route("/api/jobstats/job/<jobid>")
+@_contained
+def api_jobstats_job(jobid):
+    submit, err = _job_args(jobid)
+    if err:
+        return err
+    body = job_detail(jobid, submit)
+    if body is None:
+        return _error("job not found", 404)
+    return jsonify(_envelope(dict(body, timeseries=bool(config.PROMETHEUS_URL))))
+
+
+@bp.route("/api/jobstats/job/<jobid>/timeseries")
+@_contained
+def api_jobstats_timeseries(jobid):
+    """Per-GPU and whole-job series from Prometheus. Only the page's Generate button calls this."""
+    submit, err = _job_args(jobid)
+    if err:
+        return err
+    step_arg, agg = request.args.get("step", ""), request.args.get("agg", "")
+    if step_arg == "auto":
+        requested = None
+    elif step_arg.isdigit() and int(step_arg) in jobstats_prom.STEPS:
+        requested = int(step_arg)
+    else:
+        return _error("step must be 30, 60, 120, 300 or auto", 400)
+    if agg not in jobstats_prom.AGGS:
+        return _error("agg must be avg or max", 400)
+    if not config.PROMETHEUS_URL:
+        return _error("time series are not configured on this dashboard", 404)
+    detail = job_detail(jobid, submit)
+    if detail is None:
+        return _error("job not found", 404)
+    row = detail["job"]
+    if row["not_started"] or not row["start"]:
+        return _error("job has not started", 409)
+    start = int(row["start"])
+    finished = row["end"] is not None
+    end = int(row["end"]) if finished else int(time.time())
+    end = max(end, start)
+    step_s, coarsened = jobstats_prom.choose_step(end - start, requested)
+    if requested is None or step_s == jobstats_prom.SCRAPE_S:
+        agg = "avg"     # auto is always the average; at 30 s each point is one raw sample
+    key = (jobid, submit, step_s, agg, requested)
+    if finished:
+        with _cache_lock:
+            hit = _ts_cache.get(key)
+            if hit is not None:
+                _ts_cache.move_to_end(key)
+                return jsonify(_envelope(hit, source="prometheus"))
+    try:
+        body = jobstats_prom.fetch_job_series(config.PROMETHEUS_URL, row["jobid_raw"], start, end,
+                                              step_s, agg, selector=config.PROMETHEUS_SELECTOR)
+    except jobstats_prom.PromError as e:
+        return _error(e.message, 503, retry_after=2 if e.busy else None)
+    body = dict(body, coarsened=coarsened, requested_step=requested)
+    if finished:
+        with _cache_lock:
+            _ts_cache[key] = body
+            _ts_cache.move_to_end(key)
+            while len(_ts_cache) > TS_ENTRIES:
+                _ts_cache.popitem(last=False)
+    return jsonify(_envelope(body, source="prometheus"))

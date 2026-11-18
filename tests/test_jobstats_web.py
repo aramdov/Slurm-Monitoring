@@ -698,5 +698,110 @@ class HardeningTests(RouteTestBase):
         self.assertEqual(len(jw._explorer_cache), 0)
 
 
+class TimeseriesRouteTests(RouteTestBase):
+    """GET /api/jobstats/job/<jobid>/timeseries. sacct and Prometheus are both faked."""
+
+    def setUp(self):
+        super().setUp()
+        self._url = config.PROMETHEUS_URL
+        config.PROMETHEUS_URL = "http://prom"
+        self.calls = []
+        self.raise_exc = None
+
+    def tearDown(self):
+        config.PROMETHEUS_URL = self._url
+
+    def fake_fetch(self, url, raw_id, start, end, step_s, agg, selector="", deadline_s=60):
+        self.calls.append(dict(url=url, raw_id=raw_id, start=start, end=end, step_s=step_s, agg=agg))
+        if self.raise_exc:
+            raise self.raise_exc
+        return {"step_s": step_s, "agg": agg, "start": start, "end": end, "gpus": [], "charts": {}}
+
+    def get(self, line, path):
+        with patch.object(jw, "run_capped", FakeSacct(line + "\n")), \
+                patch.object(jw.jobstats_prom, "fetch_job_series", self.fake_fetch):
+            return self.client.get(path)
+
+    def test_array_task_uses_raw_id(self):
+        line = sacct_line(jobid="2645_1", jobid_raw="385855", submit="1793000000")
+        r = self.get(line, "/api/jobstats/job/2645_1/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.calls, [dict(url="http://prom", raw_id="385855", start=1793000100,
+                                           end=1793003700, step_s=60, agg="avg")])
+
+    def test_running_job_ends_now_and_is_not_cached(self):
+        line = sacct_line(jobid="77", state="RUNNING", end="Unknown")
+        with patch.object(jw.time, "time", lambda: 1793010000.5):
+            for _ in range(2):
+                r = self.get(line, "/api/jobstats/job/77/timeseries?submit=1793000000&step=60&agg=max")
+                self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[0]["end"], 1793010000)
+        self.assertEqual(self.calls[0]["start"], 1793000100)
+
+    def test_finished_job_is_cached(self):
+        line = sacct_line(jobid="78")
+        for agg in ("avg", "avg", "max"):
+            r = self.get(line, f"/api/jobstats/job/78/timeseries?submit=1793000000&step=120&agg={agg}")
+            self.assertEqual(r.status_code, 200)
+        self.assertEqual([c["agg"] for c in self.calls], ["avg", "max"])
+
+    def test_auto_and_coarsening_reported(self):
+        line = sacct_line(jobid="79", start="1793000100", end=str(1793000100 + 7 * 86400))
+        body = self.get(line, "/api/jobstats/job/79/timeseries?submit=1793000000&step=30&agg=max").get_json()
+        self.assertEqual(self.calls[-1]["step_s"], 300)
+        self.assertEqual((body["step_s"], body["coarsened"], body["requested_step"]), (300, True, 30))
+        body = self.get(line, "/api/jobstats/job/79/timeseries?submit=1793000000&step=auto&agg=max").get_json()
+        self.assertEqual(self.calls[-1]["agg"], "avg")
+        self.assertEqual((body["coarsened"], body["requested_step"], body["agg"]), (False, None, "avg"))
+        self.assertEqual(self.calls[-1]["step_s"], 600)       # 7 d at <= 1500 points
+
+    def test_bad_params(self):
+        line = sacct_line(jobid="81")
+        for q in ("81/timeseries?submit=1793000000&step=45&agg=avg",
+                  "81/timeseries?submit=1793000000&step=&agg=avg",
+                  "81/timeseries?submit=1793000000&step=60&agg=min",
+                  "81/timeseries?step=60&agg=avg",
+                  "12;ls/timeseries?submit=1793000000&step=60&agg=avg"):
+            r = self.get(line, "/api/jobstats/job/" + q)
+            self.assertEqual(r.status_code, 400, q)
+        self.assertEqual(self.calls, [])
+
+    def test_not_started_409_and_not_found_404(self):
+        line = sacct_line(jobid="82", state="PENDING", start="Unknown", end="Unknown", elapsed="0")
+        r = self.get(line, "/api/jobstats/job/82/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 409)
+        r = self.get(line, "/api/jobstats/job/83/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(self.calls, [])
+
+    def test_feature_off(self):
+        config.PROMETHEUS_URL = ""
+        line = sacct_line(jobid="84")
+        r = self.get(line, "/api/jobstats/job/84/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(self.calls, [])
+        body = self.get(line, "/api/jobstats/job/84?submit=1793000000").get_json()
+        self.assertIs(body["timeseries"], False)
+
+    def test_prom_error_503(self):
+        line = sacct_line(jobid="85")
+        self.raise_exc = jw.jobstats_prom.PromError("Prometheus unreachable: refused")
+        r = self.get(line, "/api/jobstats/job/85/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("unreachable", r.get_json()["error"])
+        self.assertNotIn("Retry-After", r.headers)
+        self.raise_exc = jw.jobstats_prom.PromError("busy", busy=True)
+        r = self.get(line, "/api/jobstats/job/85/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.headers["Retry-After"], "2")
+
+    def test_detail_has_timeseries_flag(self):
+        body = self.get(sacct_line(jobid="86"), "/api/jobstats/job/86?submit=1793000000").get_json()
+        self.assertIs(body["timeseries"], True)
+        self.assertEqual(self.calls, [])
+
+
+
 if __name__ == "__main__":
     unittest.main()
