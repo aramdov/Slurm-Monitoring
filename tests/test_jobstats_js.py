@@ -475,3 +475,15 @@ class JsTimeseriesTests(unittest.TestCase):
         self.assertEqual(t({"step_s": 600, "agg": "avg", "coarsened": False, "requested_step": None}),
                          "10 min steps (auto), average per window")
 
+    def test_new_scripts_parse(self):
+        for name in ("jobstats-charts.js", "jobstats.js", "jobstats-core.js"):
+            proc = subprocess.run([NODE, "--check", str(STATIC / name)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(proc.returncode, 0, name + ": " + proc.stderr)
+
+    def test_page_loads_charts_script_with_new_version(self):
+        html = (STATIC / "jobstats.html").read_text()
+        self.assertIn('src="jobstats-charts.js?v=m5-ts"', html)
+        self.assertNotIn("m4-3-user", html)
+        self.assertLess(html.index("jobstats-core.js"), html.index("jobstats-charts.js"))
+        self.assertLess(html.index("jobstats-charts.js"), html.index('src="jobstats.js'))
+

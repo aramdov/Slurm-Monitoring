@@ -139,3 +139,38 @@ svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
 .js-bar { display: inline-block; width: 90px; height: 8px; background: #27272a; border-radius: 2px; overflow: hidden; }
 .js-bar-fill { display: block; height: 100%; }
 .js-gputable tbody tr.js-low > td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+
+/* Job page time series (jobstats-charts.js) */
+.js-ts { margin-top: 18px; }
+.js-ts-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; }
+.js-ts-bar button[disabled], .js-ts-bar select[disabled] { opacity: 0.55; cursor: default; }
+.js-ts-status { margin: 8px 0 4px; color: var(--text-muted); font-size: 12px; }
+.js-ts-status.bad { color: var(--bad); }
+.js-ts-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.js-ts-chips[hidden] { display: none; }
+.js-ts-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px; }
+.js-ts-chip[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.js-ts-sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; }
+.js-ts-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .js-ts-charts { grid-template-columns: minmax(0, 1fr); } }
+.js-ts-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px 6px; min-width: 0; }
+.js-ts-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.js-ts-title { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text); }
+.js-ts-unit { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.js-ts-svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.js-ts-gl line { stroke: var(--border); stroke-width: 1; }
+.js-ts-gl .js-ts-axis { stroke: #52525b; }
+.js-ts-tick, .js-ts-axl, .js-ts-alloclab { fill: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
+.js-ts-axl { font-size: 10.5px; }
+.js-ts-alloc { stroke: #a1a1aa; stroke-width: 1; stroke-dasharray: 5 4; }
+.js-ts-alloclab { fill: #a1a1aa; }
+.js-ts-line { fill: none; stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; transition: opacity 0.1s; }
+.js-ts-line.dim { opacity: 0.15; }
+.js-ts-line.hl { stroke-width: 2.4; }
+.js-ts-cross { stroke: var(--text); stroke-width: 1; opacity: 0.55; pointer-events: none; }
+.js-ts-hit { fill: transparent; cursor: crosshair; }
+.js-ts-read { font-family: var(--font-mono); font-size: 11px; color: var(--text); min-height: 2.6em; line-height: 1.3;
+  overflow-wrap: anywhere; }
+.js-ts-empty { display: flex; align-items: center; justify-content: center; min-height: 140px; color: var(--text-muted);
+  border: 1px dashed var(--border); border-radius: 4px; margin-top: 8px; }

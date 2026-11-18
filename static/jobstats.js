@@ -605,6 +605,90 @@
         el("td", { class: "n" }, String(r.gpus))))));
   }
 
+  // ------------------------------------------------------------------ job time series
+
+  // Built once per job and reused when renderJob redraws (e.g. "More columns"), so loaded charts stay.
+  // Nothing is fetched until the button is pressed: people flip through jobs.
+  let tsSeq = 0;
+  function tsSection(r) {
+    if (!st.job || !st.job.timeseries || r.not_started) return null;
+    if (st.ts && st.ts.key === r.key) return st.ts.el;
+    const res = el("select", { "aria-label": "Resolution" },
+      ...C.TS_STEPS.map(([val, label]) => el("option", { value: val }, label)));
+    res.value = "auto";
+    const agg = el("select", { "aria-label": "Aggregation" },
+      el("option", { value: "avg" }, "Average"), el("option", { value: "max" }, "Peak"));
+    const syncAgg = () => {
+      agg.disabled = res.value === "30" || res.value === "auto";
+      agg.title = agg.disabled ? (res.value === "30" ? "30 s is one raw sample per point" : "auto always averages") : "";
+    };
+    res.addEventListener("change", syncAgg);
+    syncAgg();
+    const btn = el("button", { type: "button", class: "js-ts-go" }, "Generate time-series plots");
+    const status = el("p", { class: "js-ts-status", "aria-live": "polite" },
+      "Choose a resolution and press the button. Nothing is fetched before that.");
+    const chips = el("div", { class: "js-ts-chips", role: "group", "aria-label": "GPUs shown", hidden: true });
+    const charts = el("div", { class: "js-ts-body" });
+    const ctl = (label, input) => el("label", { class: "js-ctl" }, el("span", { class: "js-lbl" }, label), input);
+
+    btn.addEventListener("click", async () => {
+      const seq = ++tsSeq;
+      const aggVal = agg.disabled ? "avg" : agg.value;
+      btn.disabled = true;
+      btn.textContent = "Loading…";
+      status.className = "js-ts-status";
+      status.textContent = "Querying Prometheus…";
+      let res2, data = null, failure = null;
+      try {
+        res2 = await fetch("api/jobstats/job/" + encodeURIComponent(r.jobid) + "/timeseries?submit=" +
+          encodeURIComponent(r.submit) + "&step=" + encodeURIComponent(res.value) + "&agg=" + aggVal, { cache: "no-store" });
+        data = await res2.json().catch(() => null);
+        if (!res2.ok || !data || !data.charts) {
+          failure = ((data && data.error) || res2.statusText || "request failed") + " (" + res2.status + ")";
+        }
+      } catch (e) {
+        failure = "Could not reach the server: " + e.message;
+      }
+      if (seq !== tsSeq) return;
+      btn.disabled = false;
+      btn.textContent = "Generate time-series plots";
+      if (failure) {
+        status.className = "js-ts-status bad";
+        status.textContent = "Time series: " + failure;
+        chips.hidden = true;
+        charts.replaceChildren();
+        return;
+      }
+      const points = Math.floor((data.end - data.start) / data.step_s) + 1;
+      status.textContent = C.tsStepText(data) + ", " + points + " points" +
+        (r.end == null ? ". The job is still running; the charts end now." : ".");
+      const labels = C.tsGpuLabels(data.gpus);
+      const handle = window.JobstatsCharts.render(charts, data, labels,
+        { gpuCharts: r.alloc_gpus > 0 || data.gpus.length > 0, allocGpus: r.alloc_gpus });
+      chips.replaceChildren();
+      chips.hidden = data.gpus.length < 2;
+      for (const g of data.gpus) {
+        const chip = el("button", { type: "button", class: "js-chip js-ts-chip", "aria-pressed": "true" },
+          el("span", { class: "js-ts-sw", style: "background:" + handle.colors[g.key] }), labels[g.key]);
+        chip.addEventListener("click", () => {
+          const on = chip.getAttribute("aria-pressed") !== "true";
+          chip.setAttribute("aria-pressed", on ? "true" : "false");
+          handle.setVisible(g.key, on);
+        });
+        chips.append(chip);
+      }
+    });
+
+    const section = el("section", { class: "js-ts", "aria-label": "Time series" },
+      el("div", { class: "js-sechead" }, el("h3", null, "Time series"),
+        el("span", { class: "js-hint" }, "One line per GPU. Hover a chart to read the values at that time and highlight " +
+          "the nearest GPU in every chart; click a GPU chip to hide or show it.")),
+      el("div", { class: "js-ts-bar" }, ctl("Resolution", res), ctl("Aggregation", agg), btn),
+      status, chips, charts);
+    st.ts = { key: r.key, el: section };
+    return section;
+  }
+
   let jobSeq = 0;
   async function showJob(jobid, submit) {
     const seq = ++jobSeq;
@@ -632,6 +716,8 @@
       return;
     }
     st.job = body;
+    st.ts = null;
+    tsSeq++;                                 // drop a time-series response for the previous job
     renderJob(back);
   }
 
@@ -664,9 +750,13 @@
       el("div", { class: "js-cmd" }, cmd, copy),
     ];
     if (r.summary_state !== "ok" || r.not_started) {
+      const running = /^RUNNING/.test(r.state || "") && r.summary_state === "missing";
       const why = r.not_started ? "The job never started, so there is nothing to show."
+        : running ? "The job is still running. Its jobstats summary is written when it ends."
         : (NO_DETAIL[r.summary_state] || "No summary.") + (r.summary_state === "invalid" ? " (" + (r.invalid_reason || "?") + ")." : "");
       parts.push(el("p", { class: "js-msg" }, why));
+      const ts = tsSection(r);
+      if (ts) parts.push(ts);
       v.replaceChildren(...parts);
       return;
     }
@@ -685,9 +775,12 @@
     const cpu = cpuSection(nodes);
     if (cpu) parts.push(el("div", { class: "js-sechead" }, el("h3", null, "CPU and memory per node")),
                         el("div", { class: "js-tw js-tw-auto" }, cpu));
+    const ts = tsSection(r);
+    if (ts) parts.push(ts);
     parts.push(el("p", { class: "js-note" },
-      "Values come from the stored jobstats summary (JS1): one mean per GPU over the whole run. It has no sample " +
-      "counts, so a mean assumes the sampled period represents the run. Time series come in phase B."));
+      "Values in the tables come from the stored jobstats summary (JS1): one mean per GPU over the whole run. It has " +
+      "no sample counts, so a mean assumes the sampled period represents the run." +
+      (st.job.timeseries ? " Time series below come from Prometheus at the resolution you choose." : "")));
     v.replaceChildren(...parts);
   }
 
