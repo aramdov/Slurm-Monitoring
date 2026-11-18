@@ -21,6 +21,19 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 NOW_S = 1800000000
 
 
+# Just enough DOM for jobstats-charts.js under Node: elements record attributes, children and listeners.
+STUB_DOM = (
+    "function mk(tag){const e={tag,attrs:{},children:[],style:{},listeners:{},textContent:'',"
+    "classList:{set:new Set(),add(c){this.set.add(c)},toggle(c,on){on?this.set.add(c):this.set.delete(c)}},"
+    "setAttribute(k,v){this.attrs[k]=String(v)},getAttribute(k){return this.attrs[k]},"
+    "append(...k){this.children.push(...k)},replaceChildren(...k){this.children=k},"
+    "addEventListener(t,f){(this.listeners[t]=this.listeners[t]||[]).push(f)}};"
+    "Object.defineProperty(e,'className',{set(v){this.classList.set=new Set(v.split(' '))},"
+    "get(){return [...this.classList.set].join(' ')}});return e}"
+    "global.document={createElement:mk,createElementNS:(ns,t)=>mk(t)};global.self=global;"
+)
+
+
 def run_js(body, data):
     """Run `body` with `core` (jobstats-core.js), `tele` (gpu-telemetry.js) and `data` in scope."""
     script = (
@@ -474,6 +487,33 @@ class JsTimeseriesTests(unittest.TestCase):
                          "5 min steps (30 s would exceed 5000 points), average per window")
         self.assertEqual(t({"step_s": 600, "agg": "avg", "coarsened": False, "requested_step": None}),
                          "10 min steps (auto), average per window")
+        self.assertEqual(t({"step_s": 120, "agg": "avg", "coarsened": True, "requested_step": 30, "max_points": 2500}),
+                         "2 min steps (30 s would exceed 2500 points), average per window")
+
+    def render(self, body, expr):
+        return run_js(STUB_DOM + "self.JobstatsCore = core; require(%s);"
+                      "const c = mk('div'); const h = self.JobstatsCharts.render(c, data, core.tsGpuLabels(data.gpus), {});"
+                      "const cards = c.children[0].children; %s" % (json.dumps(str(STATIC / "jobstats-charts.js")), expr), body)
+
+    def test_two_hosts_same_minor_look_different(self):
+        gpus = [{"key": h + "/0", "host": h, "minor": "0"} for h in ("gpu07", "gpu08")]
+        series = {g["key"]: [[0, 10], [60, 20]] for g in gpus}
+        body = {"step_s": 60, "agg": "avg", "start": 0, "end": 60, "gpus": gpus,
+                "charts": {"duty": {"title": "GPU duty", "unit": "%", "kind": "gpu", "ymax": 100, "allocated": None,
+                                    "series": series}}}
+        got = self.render(body, "const p = cards[0].children[1].children.find(x => x.attrs.class === 'js-ts-lines').children;"
+                                "return {paths: p.map(x => [x.attrs.stroke, x.attrs['stroke-dasharray'] || ''] ), styles: h.styles};")
+        (c1, d1), (c2, d2) = got["paths"]
+        self.assertNotEqual((c1, d1), (c2, d2))
+        self.assertEqual(got["styles"]["gpu08/0"]["dash"], d2)
+
+    def test_gpu_memory_axis_ends_at_card_total(self):
+        body = {"step_s": 60, "agg": "avg", "start": 0, "end": 60, "gpus": [{"key": "a/0", "host": "a", "minor": "0"}],
+                "charts": {"gpu_mem": {"title": "GPU memory", "unit": "GB", "kind": "gpu", "ymax": 79.6, "allocated": None,
+                                       "series": {"a/0": [[0, 41.0], [60, 41.5]]}}}}
+        ticks = self.render(body, "const g = cards[0].children[1].children.find(x => x.attrs.class === 'js-ts-gl');"
+                                  "return g.children.filter(x => x.tag === 'text' && x.attrs['text-anchor'] === 'end').map(x => x.textContent);")
+        self.assertEqual(ticks[-1], "79.6")
 
     def test_chart_order_matches_server(self):
         import jobstats_prom

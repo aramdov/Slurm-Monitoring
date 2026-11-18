@@ -21,7 +21,8 @@ SCRAPE_S = 30
 STEPS = (30, 60, 120, 300)                          # offered on the page
 LADDER = (30, 60, 120, 300, 600, 1800, 3600)        # steps the server may move to
 AUTO_POINTS = 1500
-MAX_POINTS = 5000                                   # Prometheus itself refuses > 11,000 per series
+MAX_POINTS = 5000                                   # per line for jobs up to 8 GPUs; Prometheus refuses > 11,000
+GIB = 1 / 1024 ** 3                                 # "GB" on this page is 1024^3 bytes, as in the tables (fmtGB)
 
 QUERY_TIMEOUT_S = 10
 DEADLINE_S = 60                                     # per request; gunicorn kills a worker at 120 s
@@ -44,12 +45,12 @@ CHARTS = (
      "metric": "nvidia_gpu_any_tensor_util_percent"},
     {"name": "dram", "title": "DRAM bandwidth", "unit": "%", "kind": "gpu", "scale": 100,
      "metric": "nvidia_gpu_dram_bw_util_percent"},
-    {"name": "gpu_mem", "title": "GPU memory", "unit": "GB", "kind": "gpu", "scale": 1e-9,
+    {"name": "gpu_mem", "title": "GPU memory", "unit": "GB", "kind": "gpu", "scale": GIB,
      "metric": "nvidia_gpu_memory_used_bytes"},
     {"name": "power", "title": "GPU power", "unit": "W", "kind": "gpu", "scale": 1e-3,
      "metric": "nvidia_gpu_power_usage_milliwatts"},
     {"name": "cpu", "title": "CPU cores in use", "unit": "cores", "kind": "job", "scale": 1},
-    {"name": "ram", "title": "RAM", "unit": "GB", "kind": "job", "scale": 1e-9},
+    {"name": "ram", "title": "RAM", "unit": "GB", "kind": "job", "scale": GIB},
 )
 
 
@@ -57,16 +58,25 @@ def _points(span_s, step_s):
     return max(0, int(span_s)) // step_s + 1
 
 
-def choose_step(span_s, requested):
-    """(step_s, coarsened). requested=None is auto: smallest LADDER step keeping <= AUTO_POINTS.
-    An explicit step is raised along LADDER until the line has <= MAX_POINTS; coarsened says so."""
+def point_limit(gpus):
+    """Points per line allowed for a job with this many GPUs: the work and payload of one request stay
+    near 8 GPU lines x MAX_POINTS, so a 64-GPU job gets coarser steps instead of 8x the memory."""
+    return MAX_POINTS * 8 // max(8, int(gpus or 0))
+
+
+def choose_step(span_s, requested, gpus=0):
+    """(step_s, coarsened). requested=None is auto: smallest LADDER step keeping <= AUTO_POINTS (scaled
+    down like point_limit for jobs over 8 GPUs). An explicit step is raised along LADDER until the line
+    has <= point_limit(gpus) points; coarsened says so."""
+    limit = point_limit(gpus)
     if requested is None:
+        auto = min(AUTO_POINTS, AUTO_POINTS * 8 // max(8, int(gpus or 0)))
         for step in LADDER:
-            if _points(span_s, step) <= AUTO_POINTS:
+            if _points(span_s, step) <= auto:
                 return step, False
         return LADDER[-1], False
     i = LADDER.index(requested)
-    while i < len(LADDER) - 1 and _points(span_s, LADDER[i]) > MAX_POINTS:
+    while i < len(LADDER) - 1 and _points(span_s, LADDER[i]) > limit:
         i += 1
     return LADDER[i], LADDER[i] != requested
 
@@ -234,8 +244,8 @@ def fetch_job_series(url, raw_id, start, end, step_s, agg, selector="", deadline
                              "ymax": YMAX_FIXED.get(c["unit"]), "allocated": None, "series": series}
 
     total = _last_scalar(results.get("gpu_mem_total", []))
-    charts["gpu_mem"]["ymax"] = round(total * 1e-9, 1) if total else None
-    for name, alloc_q, scale in (("cpu", "cpu_alloc", 1), ("ram", "ram_alloc", 1e-9)):
+    charts["gpu_mem"]["ymax"] = round(total * GIB, 1) if total else None
+    for name, alloc_q, scale in (("cpu", "cpu_alloc", 1), ("ram", "ram_alloc", GIB)):
         alloc = _last_scalar(results.get(alloc_q, []))
         if alloc:
             a = round(alloc * scale, 2)

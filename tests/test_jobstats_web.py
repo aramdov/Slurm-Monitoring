@@ -756,6 +756,29 @@ class TimeseriesRouteTests(RouteTestBase):
         self.assertEqual((body["coarsened"], body["requested_step"], body["agg"]), (False, None, "avg"))
         self.assertEqual(self.calls[-1]["step_s"], 600)       # 7 d at <= 1500 points
 
+    def test_many_gpus_coarsen_and_report_budget(self):
+        tres = "billing=448,cpu=128,gres/gpu:h100=16,gres/gpu=16,mem=400G,node=2"
+        line = sacct_line(jobid="90", tres=tres, start="1793000100", end=str(1793000100 + 2 * 86400))
+        body = self.get(line, "/api/jobstats/job/90/timeseries?submit=1793000000&step=30&agg=avg").get_json()
+        self.assertEqual(self.calls[-1]["step_s"], 120)
+        self.assertEqual((body["coarsened"], body["max_points"]), (True, 2500))
+
+    def test_large_body_not_cached_and_cache_bytes_bounded(self):
+        big = {"pad": "x" * 5000}
+        line = sacct_line(jobid="91")
+        orig = self.fake_fetch
+        self.fake_fetch = lambda *a, **k: dict(orig(*a, **k), **big)
+        with patch.object(jw, "TS_CACHE_BYTES", 8000):
+            for _ in range(2):
+                self.get(line, "/api/jobstats/job/91/timeseries?submit=1793000000&step=60&agg=avg")
+        self.assertEqual(len(self.calls), 2)          # > a quarter of the budget: never cached
+        self.fake_fetch = orig
+        with patch.object(jw, "TS_CACHE_BYTES", 8000):
+            for agg in ("avg", "max", "avg"):
+                self.get(line, f"/api/jobstats/job/91/timeseries?submit=1793000000&step=120&agg={agg}")
+            self.assertLessEqual(sum(len(v) for v in jw._ts_cache.values()), 8000)
+        self.assertEqual(len(self.calls), 4)          # small bodies are cached
+
     def test_bad_params(self):
         line = sacct_line(jobid="81")
         for q in ("81/timeseries?submit=1793000000&step=45&agg=avg",

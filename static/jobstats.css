@@ -151,7 +151,7 @@ svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
 .js-ts-chips[hidden] { display: none; }
 .js-ts-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px; }
 .js-ts-chip[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
-.js-ts-sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; }
+.js-ts-sw { display: inline-block; flex: none; }
 .js-ts-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 900px) { .js-ts-charts { grid-template-columns: minmax(0, 1fr); } }
 .js-ts-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px 6px; min-width: 0; }

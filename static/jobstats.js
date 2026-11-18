@@ -609,6 +609,14 @@
 
   // Built once per job and reused when renderJob redraws (e.g. "More columns"), so loaded charts stay.
   // Nothing is fetched until the button is pressed: people flip through jobs.
+  function tsSwatch(style) {
+    const s = svgEl("svg", { class: "js-ts-sw", viewBox: "0 0 18 4", width: "18", height: "4", "aria-hidden": "true" });
+    const line = svgEl("line", { x1: "0", x2: "18", y1: "2", y2: "2", stroke: style.color, "stroke-width": "3" });
+    if (style.dash) line.setAttribute("stroke-dasharray", style.dash);
+    s.append(line);
+    return s;
+  }
+
   let tsSeq = 0;
   function tsSection(r) {
     if (!st.job || !st.job.timeseries || r.not_started) return null;
@@ -669,7 +677,7 @@
       chips.hidden = data.gpus.length < 2;
       for (const g of data.gpus) {
         const chip = el("button", { type: "button", class: "js-chip js-ts-chip", "aria-pressed": "true" },
-          el("span", { class: "js-ts-sw", style: "background:" + handle.colors[g.key] }), labels[g.key]);
+          tsSwatch(handle.styles[g.key]), labels[g.key]);
         chip.addEventListener("click", () => {
           const on = chip.getAttribute("aria-pressed") !== "true";
           chip.setAttribute("aria-pressed", on ? "true" : "false");

@@ -9,6 +9,9 @@
   const PW = W - ML - MR, PH = H - MT - MB;
   const COLORS = ["#60a5fa", "#f59e0b", "#34d399", "#f87171", "#a78bfa", "#22d3ee", "#d4a373", "#94a3b8"];
   const JOB_COLOR = "#2dd4bf";
+  // Multi-node jobs: colour follows the GPU's place on its node, the dash pattern follows the node,
+  // so gpu07/0 and gpu08/0 never draw as one line.
+  const DASHES = ["", "7 3", "2 2.5", "10 3 2 3"];
   const HL_PX = 14;   // pointer within this many px (viewBox units) of a GPU line highlights it
 
   function svg(tag, attrs) {
@@ -43,7 +46,7 @@
   }
 
   // One chart: frame, gridlines, axes, lines, allocated line, crosshair. Returns its handle.
-  function drawChart(def, body, keys, colorOf, axis) {
+  function drawChart(def, body, keys, colorOf, dashOf, axis) {
     const card = div("js-ts-card");
     const head = div("js-ts-head");
     head.append(div("js-ts-title", def.title), div("js-ts-unit", def.note));
@@ -56,8 +59,13 @@
       return { card, def, empty: true };
     }
     const span = Math.max(1, body.end - body.start);
-    const top = Math.max(def.ymax || 0, def.allocated || 0, seriesMax(pts));
-    const yt = C.tsTicks(top, 4);
+    const dataMax = seriesMax(pts);
+    const top = Math.max(def.ymax || 0, def.allocated || 0, dataMax);
+    let yt = C.tsTicks(top, 4);
+    // GPU memory: the axis ends at the card's total (spec), with a labelled top tick
+    if (def.name === "gpu_mem" && def.ymax && dataMax <= def.ymax) {
+      yt = yt.filter((t) => t < def.ymax - 1e-9).concat([def.ymax]);
+    }
     const ymax = yt[yt.length - 1];
     const x = (t) => ML + ((t - body.start) / span) * PW;
     const y = (v) => MT + PH - (Math.max(0, Math.min(v, ymax)) / ymax) * PH;
@@ -106,6 +114,7 @@
       }
       if (p.length === 1) d += "h1";
       const path = svg("path", { d, stroke: colorOf(key), class: "js-ts-line" });
+      if (dashOf(key)) path.setAttribute("stroke-dasharray", dashOf(key));
       paths[key] = path;
       lines.append(path);
     }
@@ -125,9 +134,17 @@
   function render(container, body, labels, opts) {
     opts = opts || {};
     const keys = (body.gpus || []).map((g) => g.key);
-    const colors = {};
-    keys.forEach((k, i) => { colors[k] = COLORS[i % COLORS.length]; });
+    const colors = {}, styles = {};
+    const hosts = [], perHost = {};
+    for (const g of body.gpus || []) {
+      if (!(g.host in perHost)) { perHost[g.host] = 0; hosts.push(g.host); }
+      const color = COLORS[perHost[g.host]++ % COLORS.length];
+      const dash = DASHES[hosts.indexOf(g.host) % DASHES.length];
+      colors[g.key] = color;
+      styles[g.key] = { color, dash };
+    }
     const colorOf = (k) => (k === "job" ? JOB_COLOR : colors[k] || COLORS[0]);
+    const dashOf = (k) => (styles[k] && styles[k].dash) || "";
     const hidden = new Set();
     const axis = C.tsTimeAxis(Math.max(1, body.end - body.start));
     const nGpu = keys.length || opts.allocGpus || 0;
@@ -141,7 +158,7 @@
       if (isGpu && opts.gpuCharts === false) continue;
       const note = ch.unit + ", " + (isGpu ? nGpu + " GPU" + (nGpu === 1 ? "" : "s") : "whole job");
       const def = Object.assign({ name, note }, ch);
-      const c = drawChart(def, body, isGpu ? keys : ["job"], colorOf, axis);
+      const c = drawChart(def, body, isGpu ? keys : ["job"], colorOf, dashOf, axis);
       charts.push(c);
       grid.append(c.card);
     }
@@ -227,6 +244,7 @@
 
     return {
       colors,
+      styles,
       setVisible(key, on) {
         if (on) hidden.delete(key); else hidden.add(key);
         if (hl === key && !on) hl = null;

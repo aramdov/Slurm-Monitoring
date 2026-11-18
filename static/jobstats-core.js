@@ -498,7 +498,7 @@
     let text = tsStepLabel(body.step_s) + " steps";
     if (body.step_s === 30) return text + " (raw samples)";
     if (body.coarsened && body.requested_step) {
-      text += " (" + tsStepLabel(body.requested_step) + " would exceed " + TS_MAX_POINTS + " points)";
+      text += " (" + tsStepLabel(body.requested_step) + " would exceed " + (body.max_points || TS_MAX_POINTS) + " points)";
     } else if (body.requested_step === null) {
       text += " (auto)";
     }

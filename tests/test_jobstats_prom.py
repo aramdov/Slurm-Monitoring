@@ -31,6 +31,13 @@ class QueryTests(unittest.TestCase):
     def test_choose_step_auto_retention_limit(self):
         self.assertEqual(jp.choose_step(180 * 86400, None), (3600, False))  # 4321 points
 
+    def test_choose_step_point_budget_scales_with_gpus(self):
+        self.assertEqual(jp.point_limit(8), 5000)
+        self.assertEqual(jp.point_limit(16), 2500)
+        self.assertEqual(jp.choose_step(12 * 3600, 30, gpus=16), (30, False))     # 1441 <= 2500
+        self.assertEqual(jp.choose_step(2 * 86400, 30, gpus=16), (120, True))     # 5761, 2881 > 2500
+        self.assertEqual(jp.choose_step(12 * 3600, None, gpus=64), (300, False))  # auto budget 187
+
     def test_gpu_queries(self):
         q = jp.build_queries("385855", 30, "avg")
         self.assertEqual(q["duty"], 'nvidia_gpu_duty_cycle{jobid="385855"}')
@@ -129,9 +136,9 @@ class FetchTests(unittest.TestCase):
     def test_units(self):
         out = self.fetch(FakeProm({
             "nvidia_gpu_sm_util_percent": [_gpu("gpu08", "6", ["0.9223"])],
-            "nvidia_gpu_memory_used_bytes": [_gpu("gpu08", "6", ["41000000000"])],
+            "nvidia_gpu_memory_used_bytes": [_gpu("gpu08", "6", [str(41 * 1024 ** 3)])],
             "nvidia_gpu_power_usage_milliwatts": [_gpu("gpu08", "6", ["512345"])],
-            "cgroup_memory_rss_bytes": [_job(["250000000000"])],
+            "cgroup_memory_rss_bytes": [_job([str(250 * 1024 ** 3)])],
             "cgroup_cpu_total_seconds": [_job(["12.3456"])],
         }))
         c = out["charts"]
@@ -149,12 +156,12 @@ class FetchTests(unittest.TestCase):
 
     def test_ymax_and_allocated(self):
         out = self.fetch(FakeProm({
-            "nvidia_gpu_memory_total_bytes": [_job(["85899345920"])],
+            "nvidia_gpu_memory_total_bytes": [_job(["85520809984"])],   # H100 80GB card
             "cgroup_cpus": [_job(["64", "64"])],
-            "cgroup_memory_total_bytes": [_job(["200000000000"])],
+            "cgroup_memory_total_bytes": [_job([str(200 * 1024 ** 3)])],
         }))
         c = out["charts"]
-        self.assertEqual(c["gpu_mem"]["ymax"], 85.9)
+        self.assertEqual(c["gpu_mem"]["ymax"], 79.6)          # GB of 1024^3, as the tables
         self.assertEqual(c["cpu"]["allocated"], 64)
         self.assertEqual(c["cpu"]["ymax"], 73.6)
         self.assertEqual(c["ram"]["allocated"], 200.0)

@@ -42,7 +42,8 @@ CACHE_TTL_S = 60
 CACHE_ENTRIES = 8
 CACHE_BYTES = 64 * 1024 ** 2
 DETAIL_ENTRIES = 64
-TS_ENTRIES = 16                   # finished jobs' time-series bodies (~1 MB each at most)
+TS_ENTRIES = 16                   # finished jobs' time-series bodies, stored as JSON bytes
+TS_CACHE_BYTES = 48 * 1024 ** 2   # all of them; one body over a quarter of this is not cached
 SUMMARY_STATES = ("ok", "short", "none", "invalid", "other", "missing")
 
 JOBID_RE = re.compile(r"[0-9]{1,10}(_[0-9]{1,10})?")
@@ -73,7 +74,7 @@ _sacct_slot = threading.Semaphore(1)     # admission: one sacct at a time, share
 _cache_lock = threading.Lock()           # guards the dicts below; never held during I/O
 _explorer_cache = OrderedDict()          # (q_from_s, q_to_s) -> (ts, size, rows, unparsed)
 _detail_cache = OrderedDict()            # key -> (ts, body)
-_ts_cache = OrderedDict()                # (jobid, submit, step_s, agg) -> body, finished jobs only
+_ts_cache = OrderedDict()                # (jobid, submit, step_s, agg, requested) -> JSON bytes, finished jobs only
 
 
 class SourceError(Exception):
@@ -646,7 +647,7 @@ def api_jobstats_timeseries(jobid):
     finished = row["end"] is not None
     end = int(row["end"]) if finished else int(time.time())
     end = max(end, start)
-    step_s, coarsened = jobstats_prom.choose_step(end - start, requested)
+    step_s, coarsened = jobstats_prom.choose_step(end - start, requested, gpus=row["alloc_gpus"])
     if requested is None or step_s == jobstats_prom.SCRAPE_S:
         agg = "avg"     # auto is always the average; at 30 s each point is one raw sample
     key = (jobid, submit, step_s, agg, requested)
@@ -655,17 +656,20 @@ def api_jobstats_timeseries(jobid):
             hit = _ts_cache.get(key)
             if hit is not None:
                 _ts_cache.move_to_end(key)
-                return jsonify(_envelope(hit, source="prometheus"))
+                return current_app.response_class(hit, mimetype="application/json")
     try:
         body = jobstats_prom.fetch_job_series(config.PROMETHEUS_URL, row["jobid_raw"], start, end,
                                               step_s, agg, selector=config.PROMETHEUS_SELECTOR)
     except jobstats_prom.PromError as e:
         return _error(e.message, 503, retry_after=2 if e.busy else None)
-    body = dict(body, coarsened=coarsened, requested_step=requested)
-    if finished:
+    body = dict(body, coarsened=coarsened, requested_step=requested,
+                max_points=jobstats_prom.point_limit(row["alloc_gpus"]))
+    raw = json.dumps(_envelope(body, source="prometheus"), separators=(",", ":")).encode()
+    del body
+    if finished and len(raw) <= TS_CACHE_BYTES // 4:
         with _cache_lock:
-            _ts_cache[key] = body
+            _ts_cache[key] = raw
             _ts_cache.move_to_end(key)
-            while len(_ts_cache) > TS_ENTRIES:
+            while len(_ts_cache) > TS_ENTRIES or sum(len(v) for v in _ts_cache.values()) > TS_CACHE_BYTES:
                 _ts_cache.popitem(last=False)
-    return jsonify(_envelope(body, source="prometheus"))
+    return current_app.response_class(raw, mimetype="application/json")
