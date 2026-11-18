@@ -7,10 +7,6 @@ ADMIN_TOKEN = os.environ.get("SLURM_DASHBOARD_ADMIN_TOKEN", "")
 DISABLE_RECORDER = os.environ.get("SLURM_DASHBOARD_DISABLE_RECORDER", "").lower() in (
     "1", "true", "yes",
 )
-# Job page time series (jobstats_prom.py). Empty URL = feature off, button hidden.
-PROMETHEUS_URL = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_URL", "").rstrip("/")
-# Extra label matchers added to every time-series query, e.g. cluster="slurm".
-PROMETHEUS_SELECTOR = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_SELECTOR", "").strip()
 GPUS_PER_NODE = 8
 CPUS_PER_NODE = 224
 REFRESH_INTERVALS = [5, 10, 30, 60]  # seconds
@@ -20,7 +16,10 @@ DEFAULT_REFRESH = 10
 #   "sampler"    -- nodes push nvidia-smi snapshots to /api/gpu-samples (SQLite tables)
 #   "prometheus" -- read jobstats' nvml_exporter series (labelled jobid=) from Prometheus
 GPU_SOURCE = os.environ.get("SLURM_DASHBOARD_GPU_SOURCE", "sampler")
-PROMETHEUS_URL = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_URL", "http://127.0.0.1:9090")
+# Also drives the job page time series (jobstats_prom.py). Empty URL = time series off, button hidden.
+PROMETHEUS_URL = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_URL", "http://127.0.0.1:9090").rstrip("/")
+# Extra label matchers added to every time-series query, e.g. cluster="slurm".
+PROMETHEUS_SELECTOR = os.environ.get("SLURM_DASHBOARD_PROMETHEUS_SELECTOR", "").strip()
 PROMETHEUS_SCRAPE_SEC = int(os.environ.get("SLURM_DASHBOARD_PROMETHEUS_SCRAPE_SEC", "30"))
 
 # Directory holding squeue/sinfo/scontrol. Empty = whatever is first on PATH.
