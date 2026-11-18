@@ -45,6 +45,15 @@ retention. `SLURM_DASHBOARD_HOST`/`SLURM_DASHBOARD_PORT` configure the built-in
 Python server; Gunicorn uses its own `--bind`. Job history has no default expiry;
 aggregate disk samples retain 14 days and do not measure per-user disk usage.
 
+The `/jobstats` job page can draw time series for one job (GPU duty, SM, tensor,
+DRAM, GPU memory and power per GPU; CPU cores and RAM for the whole job) from a
+Prometheus that scrapes the jobstats exporters (`nvml_exporter`,
+`cgroup_exporter`, 30 s). Set `SLURM_DASHBOARD_PROMETHEUS_URL`, for example
+`http://127.0.0.1:9090`; unset, the page shows no time-series controls.
+`SLURM_DASHBOARD_PROMETHEUS_SELECTOR` adds label matchers to every query, for
+example `cluster="slurm"`. Queries run only when someone presses "Generate
+time-series plots", one request at a time, with a 10 s timeout per query.
+
 ## Install GPU exporters on nodes
 
 Start with **[the deployment guide](deploy/GPU_TELEMETRY_SETUP.md)**. It includes
