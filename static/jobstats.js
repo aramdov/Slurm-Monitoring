@@ -13,7 +13,8 @@
   const MEMBER_LIMIT = 200;
 
   const DEF = { range: "7d", from: null, to: null, q: "", gpus: "all", mingh: 0, metric: "gpu_pct", below: null, above: null,
-                sort: "end", dir: "desc", view: "jobs", by: "name", gsort: "gpu_hours", gdir: "desc" };
+                sort: "end", dir: "desc", view: "jobs", by: "name", gsort: "gpu_hours", gdir: "desc",
+                size: "gpuh", split: "0" };
   const st = Object.assign({}, DEF, { limit: PAGE, glimit: GPAGE, data: null, open: new Set(), cache: null });
 
   // ------------------------------------------------------------------ DOM helpers
@@ -163,7 +164,9 @@
     st.above = num(p.get("above"));
     st.sort = pick(p.get("sort"), COLKEYS, DEF.sort);
     st.dir = pick(p.get("dir"), ["asc", "desc"], DEF.dir);
-    st.view = pick(p.get("view"), ["jobs", "groups"], DEF.view);
+    st.view = pick(p.get("view"), ["jobs", "groups", "scatter"], DEF.view);
+    st.size = pick(p.get("size"), ["gpuh", "equal"], DEF.size);
+    st.split = pick(p.get("split"), ["0", "1"], DEF.split);
     st.by = pick(p.get("by"), ["name", "array", "family"], DEF.by);
     st.gsort = pick(p.get("gsort"), GCOLKEYS, DEF.gsort);
     st.gdir = pick(p.get("gdir"), ["asc", "desc"], DEF.gdir);
@@ -176,7 +179,7 @@
     if (st.range === "custom") { p.set("from", isoMinute(st.from)); p.set("to", isoMinute(st.to)); }
     else if (st.range !== DEF.range) p.set("range", st.range);
     if (st.q) p.set("q", st.q);
-    for (const k of ["gpus", "sort", "dir", "view", "by", "gsort", "gdir"]) if (st[k] !== DEF[k]) p.set(k, st[k]);
+    for (const k of ["gpus", "sort", "dir", "view", "by", "gsort", "gdir", "size", "split"]) if (st[k] !== DEF[k]) p.set(k, st[k]);
     if (st.mingh) p.set("mingh", st.mingh);
     if (st.metric !== DEF.metric) p.set("metric", st.metric);
     if (st.below != null) p.set("below", st.below);
@@ -265,6 +268,8 @@
     press("#js-mingh", st.mingh);
     press("#js-view", st.view);
     press("#js-by", st.by);
+    press("#js-size", st.size);
+    press("#js-split", st.split);
     $("#js-custom").hidden = !(st.range === "custom" || st.showCustom);
     if (st.range === "custom" && !st.showCustom && st.from && st.to) {
       $("#js-from").value = localInput(st.from);
@@ -278,10 +283,13 @@
     }
     $("#js-below").value = st.below == null ? "" : st.below;
     $("#js-above").value = st.above == null ? "" : st.above;
-    $("#js-by").hidden = st.view !== "groups";
-    $("#js-famwarn").hidden = !(st.view === "groups" && st.by === "family");
+    $("#js-by").hidden = st.view === "jobs";
+    $("#js-famwarn").hidden = !(st.view !== "jobs" && st.by === "family");
     $("#js-jobs-wrap").hidden = st.view !== "jobs";
     $("#js-groups-wrap").hidden = st.view !== "groups";
+    $("#js-scatter-wrap").hidden = st.view !== "scatter";
+    $("#js-sc-bar").hidden = st.view !== "scatter";
+    if (st.view === "scatter") $("#js-more").hidden = true;
   }
 
   function localInput(ms) {
@@ -296,7 +304,28 @@
     syncControls();
     if (!st.data || st.dataFor !== rangeSig()) return;
     const rows = filtered();
-    if (st.view === "groups") renderGroups(rows); else renderJobs(rows);
+    if (st.view === "groups") renderGroups(rows);
+    else if (st.view === "scatter") renderScatter(rows);
+    else renderJobs(rows);
+  }
+
+  // ------------------------------------------------------------------ render: scatter
+
+  let scatter = null;
+  function renderScatter(rows) {
+    scatter = window.JobstatsScatter.render($("#js-scatter-wrap"), rows, {
+      mode: st.by, size: st.size, split: st.split === "1", onOpen: openJob,
+    });
+    renderStats(rows, C.aggregate(rows));
+  }
+
+  // Same route a job link takes: in place with history, or a new tab on Ctrl/Cmd.
+  function openJob(r, newTab) {
+    if (newTab) { window.open(jobHref(r), "_blank", "noopener"); return; }
+    history.pushState(null, "", jobHref(r));
+    st.fromList = true;
+    window.scrollTo(0, 0);
+    route();
   }
 
   function stat(label, value) {
@@ -852,6 +881,15 @@
   bindSeg("#js-mingh", (v) => update({ mingh: Number(v) }));
   bindSeg("#js-view", (v) => update({ view: v }));
   bindSeg("#js-by", (v) => update({ by: v, open: new Set() }));
+  bindSeg("#js-size", (v) => update({ size: v }));
+  bindSeg("#js-split", (v) => update({ split: v }));
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (scatter && st.view === "scatter" && !$("#js-main").hidden) scatter.redraw();
+    }, 150);
+  });
 
   let qTimer = null;
   $("#js-q").addEventListener("input", (e) => {

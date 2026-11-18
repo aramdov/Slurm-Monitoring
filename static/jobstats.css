@@ -198,3 +198,4 @@ svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
   border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 12px; font-family: var(--font-mono);
   overflow-wrap: anywhere; }
 .js-sc-tip[hidden] { display: none; }
+.js-sc-bar { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }

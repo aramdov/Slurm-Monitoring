@@ -520,13 +520,13 @@ class JsTimeseriesTests(unittest.TestCase):
         self.assertEqual(self.js("core.TS_ORDER"), [c["name"] for c in jobstats_prom.CHARTS])
 
     def test_new_scripts_parse(self):
-        for name in ("jobstats-charts.js", "jobstats.js", "jobstats-core.js"):
+        for name in ("jobstats-charts.js", "jobstats.js", "jobstats-core.js", "jobstats-scatter.js"):
             proc = subprocess.run([NODE, "--check", str(STATIC / name)], capture_output=True, text=True, timeout=30)
             self.assertEqual(proc.returncode, 0, name + ": " + proc.stderr)
 
     def test_page_loads_charts_script_with_new_version(self):
         html = (STATIC / "jobstats.html").read_text()
-        self.assertIn('src="jobstats-charts.js?v=m5-ts"', html)
+        self.assertIn('src="jobstats-charts.js?v=m6-sc"', html)
         self.assertNotIn("m4-3-user", html)
         self.assertLess(html.index("jobstats-core.js"), html.index("jobstats-charts.js"))
         self.assertLess(html.index("jobstats-charts.js"), html.index('src="jobstats.js'))
@@ -765,3 +765,41 @@ class JsScatterRenderTests(unittest.TestCase):
                 "return got;")
         out = self.render(rows, body)
         self.assertEqual(out, [["only", True]])
+
+
+class JsPageWiringTests(unittest.TestCase):
+    html = (STATIC / "jobstats.html").read_text()
+    js = (STATIC / "jobstats.js").read_text()
+
+    def test_scatter_view_button(self):
+        bar = self.html[self.html.index('id="js-view"'):]
+        bar = bar[:bar.index("</div>")]
+        self.assertIn('<button type="button" data-v="scatter">Scatter</button>', bar)
+
+    def test_scatter_controls(self):
+        for frag in ('id="js-sc-bar"', 'id="js-size"', 'data-v="gpuh"', 'data-v="equal"', 'id="js-split"',
+                     'id="js-scatter-wrap"'):
+            self.assertIn(frag, self.html)
+
+    def test_scatter_script_order(self):
+        h = self.html
+        self.assertLess(h.index('src="jobstats-core.js'), h.index('src="jobstats-scatter.js'))
+        self.assertLess(h.index('src="jobstats-scatter.js'), h.index('src="jobstats.js'))
+
+    def test_scatter_notes(self):
+        note = self.html[self.html.index("How the numbers are computed"):]
+        self.assertIn("one dot per job with a summary", note)
+        self.assertIn("even the part outside it", note)
+
+    def test_asset_versions_bumped(self):
+        import re
+        refs = re.findall(r'(?:src|href)="(jobstats[\w-]*\.(?:js|css)[^"]*)"', self.html)
+        self.assertEqual(len(refs), 5, refs)
+        for ref in refs:
+            self.assertTrue(ref.endswith("?v=m6-sc"), ref)
+
+    def test_url_keys(self):
+        self.assertIn('["jobs", "groups", "scatter"]', self.js)
+        self.assertIn('size: "gpuh"', self.js)
+        self.assertIn('split: "0"', self.js)
+        self.assertIn("JobstatsScatter.render(", self.js)

@@ -6,7 +6,7 @@
   <base href="./" />
   <title>Slurm – Jobstats</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="jobstats.css?v=m5-ts" />
+  <link rel="stylesheet" href="jobstats.css?v=m6-sc" />
 </head>
 <body class="jobstats-page">
   <header class="header">
@@ -91,11 +91,23 @@
       <div class="js-seg js-tabs" id="js-view" role="group" aria-label="View">
         <button type="button" data-v="jobs">Jobs</button>
         <button type="button" data-v="groups">Groups</button>
+        <button type="button" data-v="scatter">Scatter</button>
       </div>
       <div class="js-seg" id="js-by" role="group" aria-label="Group by" hidden>
         <button type="button" data-v="name">exact name</button>
         <button type="button" data-v="array">array parent</button>
         <button type="button" data-v="family">name family</button>
+      </div>
+      <div class="js-sc-bar" id="js-sc-bar" hidden>
+        <span class="js-lbl">Dot size</span>
+        <div class="js-seg" id="js-size" role="group" aria-label="Dot size">
+          <button type="button" data-v="gpuh">GPU-hours</button>
+          <button type="button" data-v="equal">equal</button>
+        </div>
+        <div class="js-seg" id="js-split" role="group" aria-label="Split by GPU count">
+          <button type="button" data-v="0">one plot</button>
+          <button type="button" data-v="1">split by GPUs</button>
+        </div>
       </div>
       <div class="js-stats" id="js-stats" aria-live="polite"></div>
     </div>
@@ -109,6 +121,7 @@
     <div class="js-tw" id="js-groups-wrap" hidden>
       <table class="js-table" id="js-groups"><thead></thead><tbody></tbody></table>
     </div>
+    <div id="js-scatter-wrap" hidden></div>
     <div class="js-more"><button type="button" id="js-more" hidden></button></div>
 
     <div class="js-note">
@@ -116,7 +129,10 @@
       <ul>
         <li>Per-job GPU columns are the mean over that job's GPUs that report the field. A dash means no value, never zero.
           GPU % is NVML utilization; SM, TC (tensor) and DRAM are GPM fractions shown as percent.</li>
-        <li>GPU-h is allocated GPUs × elapsed, for every job. Metrics come only from jobs with a summary (<code>ok</code>).</li>
+        <li>GPU-h is allocated GPUs × elapsed, for every job. Metrics come only from jobs with a summary (<code>ok</code>).
+          GPU-h counts the whole job when it overlaps the range, even the part outside it.</li>
+        <li>Scatter: one dot per job with a summary; position is the job's mean duty and mean SM over its GPUs.
+          Ring and hollow mark uneven or incomplete GPUs.</li>
         <li>Totals and group means are weighted by GPU-seconds: Σ(elapsed × value × GPUs with the field) / Σ(elapsed × GPUs
           with the field). Spread (p10, median, p90) is over per-job values, unweighted, with 3 or more jobs.</li>
         <li>CPU eff is Σ CPU-seconds used / Σ CPU-seconds allocated. Memory columns are peaks: totals and groups show the
@@ -132,8 +148,9 @@
 
   <main class="js-wrap" id="js-jobview" hidden></main>
 
-  <script src="jobstats-core.js?v=m5-ts"></script>
-  <script src="jobstats-charts.js?v=m5-ts"></script>
-  <script src="jobstats.js?v=m5-ts"></script>
+  <script src="jobstats-core.js?v=m6-sc"></script>
+  <script src="jobstats-charts.js?v=m6-sc"></script>
+  <script src="jobstats-scatter.js?v=m6-sc"></script>
+  <script src="jobstats.js?v=m6-sc"></script>
 </body>
 </html>
