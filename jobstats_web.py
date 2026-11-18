@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 
 bp = Blueprint("jobstats", __name__)
 
-SACCT_FIELDS = ("JobIDRaw,JobID,JobName%300,State,NodeList%300,AllocTRES%300,ElapsedRaw,"
+SACCT_FIELDS = ("JobIDRaw,JobID,User%64,JobName%300,State,NodeList%300,AllocTRES%300,ElapsedRaw,"
                 "Submit,Start,End,AdminComment%60000")
-N_FIELDS = 11
+N_FIELDS = 12
 SEP = "\x1f"                      # ASCII unit separator: "|" in names or comments is harmless
 SACCT_TIMEOUT_S = 10
 SACCT_MAX_BYTES = 32 * 1024 ** 2
@@ -213,14 +213,14 @@ def parse_sacct(text):
         if len(f) != N_FIELDS:
             unparsed += 1
             continue
-        jobid_raw, jobid, name, state, nodelist, tres, elapsed, submit, start, end, comment = f
+        jobid_raw, jobid, user, name, state, nodelist, tres, elapsed, submit, start, end, comment = f
         if "[" in jobid:              # unexpanded pending range, e.g. 1041_[20-30]
             continue
         if not JOBID_RE.fullmatch(jobid) or not jobid_raw.isdigit():
             unparsed += 1
             continue
         records.append({
-            "jobid": jobid, "jobid_raw": jobid_raw, "name": name, "state": state,
+            "jobid": jobid, "jobid_raw": jobid_raw, "user": user, "name": name, "state": state,
             "nodelist": nodelist, "tres": tres,
             "elapsed": int(elapsed) if elapsed.isdigit() else 0,
             "submit": _epoch(submit), "start": _epoch(start), "end": _epoch(end),
@@ -321,7 +321,8 @@ def build_row(rec, now_s):
         "key": f"{rec['jobid']}@{rec['submit']}",
         "jobid": rec["jobid"], "jobid_raw": rec["jobid_raw"],
         "array_job": array_job if array_task else None, "array_task": array_task or None,
-        "name": rec["name"], "state": rec["state"], "nodes": expand_hostlist(rec["nodelist"]),
+        "user": rec["user"], "name": rec["name"], "state": rec["state"],
+        "nodes": expand_hostlist(rec["nodelist"]),
         "alloc_gpus": alloc_gpus, "alloc_cpus": alloc_cpus, "elapsed_s": rec["elapsed"],
         "submit": rec["submit"], "start": rec["start"], "end": rec["end"],
         "not_started": not_started, "summary_state": state, "invalid_reason": reason,

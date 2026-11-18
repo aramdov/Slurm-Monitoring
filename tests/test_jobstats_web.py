@@ -27,16 +27,16 @@ def encode(payload):
     return "JS1:" + base64.b64encode(gzip.compress(raw)).decode()
 
 
-def sacct_line(jobid="100", jobid_raw=None, name="train", state="COMPLETED", nodes="b200-8c",
+def sacct_line(jobid="100", jobid_raw=None, user="alice", name="train", state="COMPLETED", nodes="b200-8c",
                tres="billing=8,cpu=8,gres/gpu:b200=1,gres/gpu=1,mem=128G,node=1", elapsed="3600",
                submit="1793000000", start="1793000100", end="1793003700", comment=""):
     jobid_raw = jobid_raw or jobid.split("_")[0]
-    return SEP.join([jobid_raw, jobid, name, state, nodes, tres, elapsed, submit, start, end, comment])
+    return SEP.join([jobid_raw, jobid, user, name, state, nodes, tres, elapsed, submit, start, end, comment])
 
 
 def fixture_line(name, **overrides):
     s = FIXTURES[name]["sacct"]
-    fields = dict(jobid=s["JobID"], jobid_raw=s["JobIDRaw"], name=name, state=s["State"],
+    fields = dict(jobid=s["JobID"], jobid_raw=s["JobIDRaw"], user=s.get("User", "alice"), name=name, state=s["State"],
                   nodes=s["NodeList"], tres=s["AllocTRES"], elapsed=s["ElapsedRaw"],
                   submit=s["Submit"], start=s["Start"], end=s["End"],
                   comment=encode(FIXTURES[name]["payload"]))
@@ -150,6 +150,10 @@ class DecodeTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_user_is_parsed_and_on_the_row(self):
+        row, _ = row_from(sacct_line(user="hrant"))
+        self.assertEqual(row["user"], "hrant")
+
     def test_pipe_in_name_and_non_js1_comment(self):
         line = sacct_line(name="a|b|c", comment="admin note | with pipe")
         records, unparsed = jw.parse_sacct(line + "\n")
