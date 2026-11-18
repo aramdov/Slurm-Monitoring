@@ -174,3 +174,27 @@ svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
   overflow-wrap: anywhere; }
 .js-ts-empty { display: flex; align-items: center; justify-content: center; min-height: 140px; color: var(--text-muted);
   border: 1px dashed var(--border); border-radius: 4px; margin-top: 8px; }
+
+/* Scatter view */
+#js-scatter-wrap { position: relative; margin-top: 8px; }
+#js-scatter-wrap[hidden], #js-sc-bar[hidden] { display: none; }
+.js-sc-count { color: var(--text-muted); font-size: 12px; margin: 4px 0 8px; }
+.js-sc-plots { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; max-width: 900px; }
+.js-sc-plots.js-sc-split { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: none; }
+@media (max-width: 900px) { .js-sc-plots.js-sc-split { grid-template-columns: minmax(0, 1fr); } }
+.js-sc-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px 6px; min-width: 0; }
+.js-sc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.js-sc-title { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text); }
+.js-sc-canvas { display: block; width: 100%; touch-action: pan-y; }
+.js-sc-empty { padding: 40px 12px; text-align: center; color: var(--text-muted); background: var(--surface); border: 1px dashed var(--border); border-radius: 4px; }
+.js-sc-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 4px; font-size: 12px; }
+.js-sc-li { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); }
+.js-sc-key { color: var(--text); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.js-sc-sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.js-sc-sw-ring { background: var(--text-muted); box-shadow: 0 0 0 1.5px #e4e4e7; }
+.js-sc-sw-hollow { border: 1.5px solid var(--text-muted); }
+.js-sc-notes p { margin: 4px 0; }
+.js-sc-tip { position: absolute; z-index: 5; pointer-events: none; min-width: 180px; max-width: 320px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 12px; font-family: var(--font-mono);
+  overflow-wrap: anywhere; }
+.js-sc-tip[hidden] { display: none; }

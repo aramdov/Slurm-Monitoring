@@ -666,3 +666,102 @@ class JsScatterTests(unittest.TestCase):
         dots = [{"x": 10, "y": 10, "r": 40, "row": {"jobid": "huge"}}]
         self.assertEqual(self.hit(dots, [[49, 10], [10, 51]]), ["huge", None])
         self.assertEqual(self.hit([], [[0, 0]]), [None])
+
+
+# STUB_DOM plus a canvas whose 2D context records every method call, and an innerHTML trap.
+SC_STUB = STUB_DOM + (
+    "global.__calls=[];global.__inner=[];"
+    "const mk0=document.createElement;"
+    "document.createElement=function(tag){const e=mk0(tag);"
+    "Object.defineProperty(e,'innerHTML',{set(v){__inner.push(v)},get(){return ''}});"
+    "e.getBoundingClientRect=()=>({left:0,top:0,width:600,height:400});"
+    "if(tag==='canvas'){const id=__calls.length;e.__id=Math.random();const rec={};"
+    "e.getContext=()=>new Proxy(rec,{get(t,p){if(p in t)return t[p];"
+    "return (...a)=>{__calls.push({c:e.__id,m:String(p),a})}},set(t,p,v){t[p]=v;return true}});}"
+    "return e};"
+    "function walk(e,f){f(e);(e.children||[]).forEach(c=>{if(c&&typeof c==='object')walk(c,f)})}"
+    "function texts(e){const t=[];walk(e,x=>{if(x.textContent)t.push(x.textContent)});return t}"
+    "function byTag(e,tag){const t=[];walk(e,x=>{if(x.tag===tag)t.push(x)});return t}"
+)
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class JsScatterRenderTests(unittest.TestCase):
+    def render(self, rows, expr, opts=None):
+        o = {"mode": "name", "size": "gpuh", "split": False}
+        o.update(opts or {})
+        return run_js(SC_STUB + "self.JobstatsCore = core; require(%s);"
+                      "const o = %s; o.onOpen = (r, n) => (self.__open || (() => {}))(r, n);"
+                      "const c = mk('div'); const h = self.JobstatsScatter.render(c, data, o);"
+                      "const arcs = __calls.filter(x => x.m === 'arc'); %s"
+                      % (json.dumps(str(STATIC / "jobstats-scatter.js")), json.dumps(o), expr), rows)
+
+    def test_render_counts_and_panels(self):
+        rows = [sc_row("1"), sc_row("2", gpu_hours=4), sc_row("3", alloc_gpus=8, summary_gpus=8),
+                sc_row("4", end=None, summary_state="missing", gpu_hours=2)]
+        out = self.render(rows, "return {t: texts(c), canv: byTag(c, 'canvas').length, arcs: arcs.length,"
+                                " fn: typeof h.redraw};")
+        count = [t for t in out["t"] if t.startswith("Plotted")]
+        self.assertEqual(len(count), 1)
+        self.assertIn("Plotted 3 jobs", count[0])
+        self.assertIn("running 1 (2.00 GPU-h)", count[0])
+        self.assertIn("% of the selection's GPU-hours is not on the plot", count[0])
+        self.assertEqual(out["canv"], 1)
+        self.assertEqual(out["arcs"], 3)
+        self.assertEqual(out["fn"], "function")
+
+    def test_render_split_three_panels(self):
+        rows = [sc_row("1"), sc_row("2", alloc_gpus=4, summary_gpus=4), sc_row("3", alloc_gpus=8, summary_gpus=8)]
+        out = self.render(rows, "return {t: texts(c), canv: byTag(c, 'canvas').length};", {"split": True})
+        self.assertEqual(out["canv"], 3)
+        for label in ("1 GPU", "2–7 GPUs", "8+ GPUs"):
+            self.assertIn(label, out["t"])
+
+    def test_render_empty(self):
+        out = self.render([], "return {t: texts(c), arcs: arcs.length, canv: byTag(c, 'canvas').length};")
+        self.assertIn("No jobs to plot", out["t"])
+        self.assertEqual(out["arcs"], 0)
+        self.assertEqual(out["canv"], 0)
+        out = self.render([sc_row("r", end=None, summary_state="missing")], "return texts(c);")
+        self.assertIn("No jobs to plot", out)
+
+    def test_render_redraw_after_empty(self):
+        out = self.render([], "h.redraw(); return arcs.length;")
+        self.assertEqual(out, 0)
+
+    def test_render_clamps_values(self):
+        rows = [sc_row("a", gpu_pct=-3, sm=104), sc_row("b", gpu_pct=0, sm=100)]
+        out = self.render(rows, "return arcs.map(x => [x.a[0], x.a[1]]);", {"size": "equal"})
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0], out[1])
+        for x, y in out:
+            self.assertTrue(0 < x < 600 and 0 < y < 600, (x, y))
+
+    def test_render_uses_text_nodes(self):
+        rows = [sc_row("1", name="<b>&x"), sc_row("2", name="")]
+        out = self.render(rows, "return {t: texts(c), inner: __inner};")
+        self.assertIn("<b>&x", out["t"])
+        self.assertEqual(out["inner"], [])
+        src = (STATIC / "jobstats-scatter.js").read_text()
+        self.assertNotIn("innerHTML =", src)
+
+    def test_draw_order_largest_first(self):
+        rows = [sc_row(str(i), gpu_hours=h) for i, h in enumerate([1, 9, 4, 16, 0.5])]
+        out = self.render(rows, "return arcs.map(x => x.a[2]);")
+        self.assertEqual(len(out), 5)
+        self.assertEqual(out, sorted(out, reverse=True))
+        self.assertEqual(out[0], 18)
+
+    def test_aria_label(self):
+        out = self.render([sc_row("1"), sc_row("2")], "return byTag(c, 'canvas')[0].attrs['aria-label'];")
+        self.assertEqual(out, "Scatter of 2 jobs: GPU duty against SM")
+
+    def test_click_opens_job(self):
+        rows = [sc_row("only", gpu_pct=50, sm=50)]
+        body = ("const cv = byTag(c, 'canvas')[0]; const a = arcs[0].a; const got = [];"
+                "self.__open = (r, n) => got.push([r.jobid, n]);"
+                "cv.listeners.click.forEach(f => f({clientX: a[0], clientY: a[1], ctrlKey: true, metaKey: false}));"
+                "cv.listeners.click.forEach(f => f({clientX: 1, clientY: 1, ctrlKey: false, metaKey: false}));"
+                "return got;")
+        out = self.render(rows, body)
+        self.assertEqual(out, [["only", True]])
