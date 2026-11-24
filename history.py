@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import threading
+import queue_history
 from typing import Any
 
 
@@ -15,6 +16,7 @@ def init_db(path: str):
     with _db_lock:
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
+        queue_history.init(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS gpu_summaries (
                 job_id TEXT NOT NULL, submit_time_ms INTEGER NOT NULL,
@@ -159,13 +161,13 @@ def init_db(path: str):
         conn.close()
 
 
-def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int):
-    """Upsert jobs: update if (job_id, submit_time_ms) exists, else insert."""
-    if not jobs:
-        return
+def upsert_jobs(db_path: str, jobs: list[dict[str, Any]], fetch_ts_ms: int,
+                queue_max_gap_ms: int = 90000):
+    """Record a successful queue snapshot and upsert job identities atomically."""
     with _db_lock:
         conn = sqlite3.connect(db_path)
         try:
+            queue_history.record(conn, jobs, fetch_ts_ms, queue_max_gap_ms)
             for job in jobs:
                 allocations_json = json.dumps(job.get("allocations", []))
                 submit_time_ms = job.get("submit_time")
@@ -539,13 +541,24 @@ def get_gpu_metrics(db_path, jobs, now_ms):
     return jobs
 
 
-def get_gpu_trend(db_path, job_id, submit_ms):
-    """At most ~720 job-average points, including min/max GPU activity per bin."""
+def get_gpu_trend(db_path, job_id, submit_ms, per_gpu=False):
+    """Return up to 720 time bins for the job or for each sampled GPU."""
     with _db_lock, sqlite3.connect(db_path) as conn:
         first, last = conn.execute("SELECT MIN(timestamp_ms),MAX(timestamp_ms) FROM gpu_samples WHERE job_id=? AND submit_time_ms=?", (job_id, submit_ms)).fetchone()
         if first is None:
             return {"points": [], "raw_retained": False}
         width = max(15_000, (last - first) // 719 + 1)
+        if per_gpu:
+            devices = {}
+            rows = conn.execute("""SELECT node,gpu_uuid,MIN(timestamp_ms),AVG(gpu),AVG(vram),AVG(memory)
+                FROM gpu_samples WHERE job_id=? AND submit_time_ms=?
+                GROUP BY node,gpu_uuid,CAST((timestamp_ms-?) / ? AS INTEGER)
+                ORDER BY node,gpu_uuid,MIN(timestamp_ms)""", (job_id, submit_ms, first, width))
+            for node, uuid, *point in rows:
+                devices.setdefault((node, uuid), []).append(dict(zip(("t", "gpu", "vram", "memory"), point)))
+            return {"raw_retained": True, "bucket_ms": width, "range": [first, last],
+                    "devices": [{"node": node, "uuid": uuid, "points": series}
+                                for (node, uuid), series in devices.items()]}
         points = conn.execute("""SELECT MIN(timestamp_ms),AVG(gpu),AVG(vram),AVG(memory),MIN(gpu),MAX(gpu),COUNT(*)
             FROM gpu_samples WHERE job_id=? AND submit_time_ms=?
             GROUP BY CAST((timestamp_ms-?) / ? AS INTEGER) ORDER BY MIN(timestamp_ms)""",
@@ -815,6 +828,23 @@ def get_disk_samples_in_window(db_path: str, from_ms: int, to_ms: int) -> list[d
             return result
         finally:
             conn.close()
+
+
+def get_pending_age_buckets(db_path: str, from_ms: int, to_ms: int, group_by: str = 'user') -> dict:
+    """Median/P90 inputs for jobs still pending, aged from Eligible at each sample."""
+    import pending_age
+    with _db_lock:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            proj_map, unit_counts = ({}, {}) if group_by == 'user' else _fetch_proj_map(conn, from_ms, to_ms)
+            rule_map = {} if group_by == 'user' else _fetch_job_rule_map(conn)
+            def resolve(user, timestamp, name):
+                return _resolve_group_key(user, timestamp, proj_map, group_by, unit_counts, name, rule_map)
+            return pending_age.get_buckets(conn, from_ms, to_ms, group_by, resolve)
+        finally:
+            conn.close()
+
 
 
 def get_wait_buckets(db_path: str, from_ms: int, to_ms: int, group_by: str = 'user') -> dict:

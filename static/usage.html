@@ -28,12 +28,9 @@
     <input type="datetime-local" id="to-date" />
     <div class="preset-group">
       <button class="preset-btn" data-preset="last1">Last 1d</button>
-      <button class="preset-btn" data-preset="last2">Last 2d</button>
       <button class="preset-btn" data-preset="last4">Last 4d</button>
       <button class="preset-btn" data-preset="last7">Last 7d</button>
       <button class="preset-btn" data-preset="last30">Last 30d</button>
-      <button class="preset-btn" data-preset="thismonth">This month</button>
-      <button class="preset-btn" data-preset="lastmonth">Last month</button>
       <button class="preset-btn" data-preset="last3months">Last 3 months</button>
       <button class="preset-btn" data-preset="last6months">Last 6 months</button>
       <button class="preset-btn" data-preset="lastyear">Last year</button>
@@ -55,8 +52,8 @@
       <div class="capacity-context">
         <div class="capacity-legend">
           <span><i class="capacity-key installed-key"></i>Installed capacity</span>
-          <span><i class="capacity-key drained-key"></i>Draining / drained</span>
-          <span><i class="capacity-key down-key"></i>Down / unavailable</span>
+          <span><i class="capacity-key drained-key"></i>Installed minus draining / drained</span>
+          <span><i class="capacity-key down-key"></i>Installed minus down / unavailable</span>
         </div>
         <div id="capacity-note" role="status"></div>
       </div>
@@ -84,26 +81,23 @@
         </div>
       </div>
 
-      <!-- Wait time section -->
-      <div class="hero-block">
-        <div class="hero-left wait-stats-left">
-          <div class="hero-label"><span class="accent-dot wait-dot"></span>Wait</div>
-          <div id="wait-stats-grid" class="wait-stats-grid"></div>
-        </div>
-        <div class="chart-container">
-          <canvas id="wait-chart"></canvas>
-        </div>
-      </div>
-
-      <!-- Queue section -->
       <div class="hero-block">
         <div class="hero-left">
           <div class="hero-label"><span class="accent-dot queue-dot"></span>Queue</div>
-          <div class="chart-description">Average GPUs waiting in each time bucket</div>
+          <div class="chart-description" role="group" aria-label="Queue chart measure">
+            <label><input type="radio" name="queue-measure" value="gpus" checked> <span id="queue-resource-label">GPUs</span></label>
+            <label><input type="radio" name="queue-measure" value="jobs"> Jobs</label>
+          </div>
+          <label class="chart-description" for="queue-category">Age since eligibility</label>
+          <select id="queue-category" class="editor-inline-select" aria-label="Pending job resource category">
+            <option value="">All job sizes</option>
+            <option value="cpu_only">CPU-only</option>
+            <option value="gpu_1_7">1–7 GPUs</option>
+            <option value="gte8">8+ GPUs</option>
+          </select>
+          <div id="wait-stats-grid" class="wait-stats-grid"></div>
         </div>
-        <div class="chart-container">
-          <canvas id="queue-chart"></canvas>
-        </div>
+        <div class="chart-container"><canvas id="queue-chart"></canvas></div>
       </div>
     </main>
 
@@ -173,6 +167,7 @@
   <!-- Datalist for user autocomplete in assignment forms -->
   <datalist id="known-users-list"></datalist>
 
-  <script src="usage.js?v=capacity-history-1"></script>
+  <script src="pending-age.js?v=queue-age-1"></script>
+  <script src="usage.js?v=queue-age-1"></script>
 </body>
 </html>

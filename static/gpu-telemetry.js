@@ -26,7 +26,7 @@
   }
   function graph(data) {
     if (!data.points.length) return '<p>15-second history has expired or has not been collected. Lifetime statistics remain available.</p>';
-    const first = data.points[0].t, last = data.points[data.points.length - 1].t;
+    const [first, last] = data.range || [data.points[0].t, data.points[data.points.length - 1].t];
     const x = (t) => 48 + (t - first) / Math.max(1, last - first) * 900;
     const y = (v) => 150 - v * 1.3;
     let svg = '<svg viewBox="0 0 980 195" role="img" aria-label="GPU activity, VRAM occupancy and memory activity over time">';
@@ -51,7 +51,7 @@
     metrics.forEach(([key], i) => { svg += `<circle class="gpu-chart-cursor-point" data-metric="${key}" r="3.5" fill="${SERIES_COLORS[i]}" stroke="#fff" stroke-width="1" style="display:none" pointer-events="none"/>`; });
     svg += `<text x="48" y="185">${escape(new Date(first).toLocaleString())}</text><text x="948" y="185" text-anchor="end">${escape(new Date(last).toLocaleString())}</text></svg>`;
     const legend = metrics.map(([, label], i) => `<span style="--series-color:${SERIES_COLORS[i]}">${label}</span>`).join("");
-    return `<p class="gpu-graph-legend">${legend}</p>${svg}<p>Faint background bands mark percentage ranges from red to green. Job average across sampled GPUs${data.bucket_ms > 15000 ? "; chart points grouped for display" : "; 15-second readings"}. Gaps indicate missing samples.</p>`;
+    return `<p class="gpu-graph-legend">${legend}</p>${svg}<p>Faint background bands mark percentage ranges from red to green. ${data.deviceLabel ? escape(data.deviceLabel) : "Job average across sampled GPUs"}${data.bucket_ms > 15000 ? "; chart points grouped for display" : "; 15-second readings"}. Gaps indicate missing samples.</p>`;
   }
   function deviceTable(data) {
     return '<div class="gpu-table-scroll"><table class="gpu-device-table"><thead><tr><th>GPU</th><th>GPU mean ± std</th><th>VRAM mean ± std</th><th>Memory activity mean ± std</th><th>VRAM used / total · peak</th><th>Samples</th></tr></thead><tbody>' + data.devices.map((d) => {
@@ -79,7 +79,8 @@
     const px = (pointer.x - bounds.left) * 980 / bounds.width;
     const py = (pointer.y - bounds.top) * 195 / bounds.height;
     if (px < 48 || px > 948 || py < 20 || py > 150) return hideChartHover(chart);
-    const points = data.points, first = points[0].t, last = points[points.length - 1].t;
+    const points = data.points;
+    const [first, last] = data.range || [points[0].t, points[points.length - 1].t];
     const time = first + (px - 48) / 900 * (last - first);
     let low = 0, high = points.length - 1;
     while (low < high) {
@@ -101,9 +102,9 @@
     });
     const tip = dialog.querySelector(".gpu-chart-tooltip");
     const date = new Date(point.t).toLocaleString(undefined, {year:"numeric", month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", timeZoneName:"short"});
-    const signature = JSON.stringify([point.t, ...metrics.map(([key]) => point[key]), data.bucket_ms]);
+    const signature = JSON.stringify([point.t, ...metrics.map(([key]) => point[key]), data.bucket_ms, data.deviceLabel]);
     if (tip._gpuSignature !== signature) {
-      tip.innerHTML = `<strong>${escape(date)}</strong>${metrics.map(([key, label], i) => `<div><span style="color:${SERIES_COLORS[i]}">${label}</span><b>${pct(point[key])}</b></div>`).join("")}<small>${data.bucket_ms > 15000 ? "Chart-bin averages" : "Average across sampled GPUs"}</small>`;
+      tip.innerHTML = `<strong>${escape(date)}</strong>${metrics.map(([key, label], i) => `<div><span style="color:${SERIES_COLORS[i]}">${label}</span><b>${pct(point[key])}</b></div>`).join("")}<small>${data.deviceLabel ? escape(data.deviceLabel) : "Average across sampled GPUs"}${data.bucket_ms > 15000 ? " · interval average" : ""}</small>`;
       tip._gpuSignature = signature;
     }
     tip.dataset.pointTime = point.t;
@@ -129,6 +130,9 @@
   function jobColor(job) {
     return color(averageActivity(job), "gpu");
   }
+  function clearChartHover() {
+    dialog.querySelectorAll(".gpu-job-chart").forEach(hideChartHover);
+  }
   function ensureDialog() {
     if (dialog) return dialog;
     dialog = document.createElement("dialog");
@@ -138,12 +142,22 @@
     dialog.querySelector(".gpu-dialog-close").addEventListener("click", () => dialog.close());
     dialog.addEventListener("close", () => {
       selected = null;
+      dialog._gpuDetails = null;
       chartRequest++;
-      hideChartHover(dialog.querySelector(".gpu-job-chart"));
+      clearChartHover();
       document.dispatchEvent(new Event("gpu-details-closed"));
     });
     dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
-    dialog.addEventListener("scroll", () => hideChartHover(dialog.querySelector(".gpu-job-chart")), true);
+    dialog.addEventListener("scroll", () => clearChartHover(), true);
+    dialog.addEventListener("change", event => {
+      if (event.target.id !== "gpu-chart-mode" || !dialog._gpuDetails) return;
+      clearChartHover();
+      const charts = dialog.querySelector(".gpu-job-charts");
+      charts.textContent = "Loading charts…";
+      delete charts.dataset.loaded;
+      const { job, url } = dialog._gpuDetails;
+      updateDetails(job, url);
+    });
     document.body.appendChild(dialog);
     return dialog;
   }
@@ -177,6 +191,8 @@
   }
   async function updateDetails(job, url) {
     const modal = ensureDialog();
+    modal._gpuDetails = { job, url };
+    const requestId = ++chartRequest;
     const d = job.gpu_telemetry;
     const title = `#${job.job_id} · ${job.job_name || "Job details"}`;
     if (modal.querySelector("h2").textContent !== title) modal.querySelector("h2").textContent = title;
@@ -192,25 +208,38 @@
     const coverage = valid(d.coverage_pct) && d.coverage_pct > 0 && d.coverage_pct < 0.1 ? "&lt;0.1%" : pct(d.coverage_pct);
     const jobKey = job.job_id + ":" + job.submit_time;
     if (body.dataset.job !== jobKey) {
-      body.innerHTML = '<div class="gpu-dialog-summary"></div><div class="gpu-job-chart">Loading chart…</div><p>Mean ± population std describes observed GPU samples. Current averages cover fresh GPUs only. Raw readings remain while running and for 24 hours after completion; lifetime summaries remain. Memory activity measures time reading/writing VRAM, not theoretical bandwidth saturation.</p>';
+      body.innerHTML = '<div class="gpu-dialog-summary"></div><label class="gpu-chart-mode">Charts <select id="gpu-chart-mode"><option value="average">Job average</option><option value="devices">All GPUs</option></select></label><div class="gpu-job-charts">Loading chart…</div><p>Mean ± population std describes observed GPU samples. Current averages cover fresh GPUs only. Raw readings remain while running and for 24 hours after completion; lifetime summaries remain. Memory activity measures time reading/writing VRAM, not theoretical bandwidth saturation.</p>';
       body.dataset.job = jobKey;
     }
     patchMarkup(body.querySelector(".gpu-dialog-summary"), identity + `<div class="gpu-detail-metrics">${cells}</div><p>Bar color: observed average GPU activity ${pct(averageActivity(job))}. ${running ? `${d.fresh_gpus}/${d.expected_gpus} GPUs have fresh readings.` : ""} Observed since ${escape(new Date(d.first_ms).toLocaleString())}; last reading ${escape(new Date(d.last_ms).toLocaleString())}. Approximate sampled coverage of this run: ${coverage}.</p>${deviceTable(d)}`);
-    const chart = body.querySelector(".gpu-job-chart");
-    bindChartHover(chart);
-    const requestId = ++chartRequest;
+    const charts = body.querySelector(".gpu-job-charts");
+    const perGpu = body.querySelector("#gpu-chart-mode").value === "devices";
     try {
-      const response = await fetch(url("api/job/" + encodeURIComponent(job.job_id) + "/gpu?submit=" + job.submit_time));
+      const path = "api/job/" + encodeURIComponent(job.job_id) + "/gpu?submit=" + job.submit_time;
+      const response = await fetch(url(path + (perGpu ? "&per_gpu=1" : "")));
       if (!response.ok) throw new Error("unavailable");
       const data = await response.json();
       if (requestId === chartRequest && modal.open) {
-        patchMarkup(chart, graph(data));
-        chart.dataset.loaded = "true";
-        chart._gpuTrend = data;
-        if (chart._gpuPointer) showChartHover(chart, chart._gpuPointer);
+        const key = ({ node, uuid }) => JSON.stringify([node, uuid]);
+        const samples = new Map((data.devices || []).map(device => [key(device), device.points]));
+        const series = perGpu ? d.devices.map(device => ({
+          points: samples.get(key(device)) || [], bucket_ms: data.bucket_ms, range: data.range,
+          deviceLabel: `${device.node} · GPU ${device.minor}`,
+        })) : [data];
+        const markup = series.map(trend => {
+          const label = trend.deviceLabel ? `<h3>${escape(trend.deviceLabel)}</h3>` : "";
+          return `<section class="gpu-job-chart">${label}${graph(trend)}</section>`;
+        }).join("");
+        patchMarkup(charts, markup || "<p>No per-GPU readings are available.</p>");
+        charts.dataset.loaded = "true";
+        charts.querySelectorAll(".gpu-job-chart").forEach((chart, index) => {
+          bindChartHover(chart);
+          chart._gpuTrend = series[index];
+          if (chart._gpuPointer) showChartHover(chart, chart._gpuPointer);
+        });
       }
     } catch (_) {
-      if (requestId === chartRequest && !chart.dataset.loaded) chart.textContent = "Chart unavailable; it will retry on the next dashboard refresh.";
+      if (requestId === chartRequest && !charts.dataset.loaded) charts.textContent = "Chart unavailable; it will retry on the next dashboard refresh.";
     }
   }
   function open(job, url) {

@@ -665,3 +665,8 @@ body {
   font-weight: 500;
   margin-left: 6px;
 }
+
+.gpu-chart-mode { display: inline-flex; gap: 8px; align-items: center; margin-top: 12px; }
+.gpu-chart-mode select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid #52525b; border-radius: 4px; padding: 4px 8px; }
+.gpu-job-chart + .gpu-job-chart { border-top: 1px solid var(--border); margin-top: 12px; }
+.gpu-job-chart h3 { font-size: 13px; margin: 12px 0 0; }

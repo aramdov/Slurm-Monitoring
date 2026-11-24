@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Any
 
 
-def _run(cmd: list[str], timeout: int = 30) -> str:
+def _run(cmd: list[str], timeout: int = 30, require_success: bool = False) -> str:
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
+        if require_success:
+            raise subprocess.CalledProcessError(r.returncode, cmd)
         return ""
     return (r.stdout or "").strip()
 
@@ -185,7 +187,7 @@ def fetch_jobs() -> list[dict[str, Any]]:
     # %V submit, %S start, %e end, %m min memory (MB), %l time limit, %P partition, %r pending reason.
     # %r is last because pending reasons are free text and get the split remainder.
     fmt = "%i|%u|%j|%T|%S|%e|%V|%N|%C|%b|%m|%Q|%l|%P|%r"
-    out = _run(["squeue", "-h", "-a", "-o", fmt])
+    out = _run(["squeue", "-h", "-a", "-o", fmt], require_success=True)
     jobs = []
     for line in out.splitlines():
         if not line.strip():
@@ -264,7 +266,48 @@ def fetch_jobs() -> list[dict[str, Any]]:
         }
         jobs.append(job)
     _fill_gpus_from_scontrol(jobs)
+    _fill_queue_details(jobs)
     return jobs
+
+
+def _queue_identity(value: str) -> str:
+    # squeue and scontrol can include an array concurrency suffix differently.
+    return re.sub(r'%\d+', '', value).replace('[', '').replace(']', '')
+
+
+def _fill_queue_details(jobs: list[dict[str, Any]]) -> None:
+    """One read-only query per snapshot; never store job commands or scripts."""
+    if not jobs:
+        return
+    out = _run(['scontrol', '-a', 'show', 'job', '-o'], require_success=True)
+    details = {}
+    for line in out.splitlines():
+        fields = dict(re.findall(r'(?:^|\s)(JobId|ArrayJobId|ArrayTaskId|SubmitTime|JobState|Reason|EligibleTime|Dependency|ReqTRES)=(\S+)', line))
+        if not fields.get('JobId'):
+            continue
+        identity = fields['JobId']
+        if fields.get('ArrayJobId') and fields.get('ArrayTaskId'):
+            identity = fields['ArrayJobId'] + '_' + fields['ArrayTaskId']
+        details[_queue_identity(identity)] = fields
+    for job in jobs:
+        fields = details.get(_queue_identity(job['job_id']))
+        if not fields or fields.get('JobState') != job['state'] or _parse_ts(fields.get('SubmitTime', '')) != job['submit_time']:
+            job['queue_details_observed'] = False
+            continue
+        job['queue_details_observed'] = True
+        job['eligible_time'] = _parse_ts(fields.get('EligibleTime', ''))
+        job['dependency'] = fields.get('Dependency')
+        job['pending_reason'] = fields.get('Reason', job.get('pending_reason', ''))
+        if fields.get('ReqTRES'):
+            resources = {}
+            for token in fields['ReqTRES'].split(','):
+                name, separator, count = token.partition('=')
+                if separator and count.isdigit():
+                    resources[name] = int(count)
+            # ReqTRES is total per task, unlike pending squeue GRES per node.
+            # Keep the existing dashboard sizing behavior; use this for ages.
+            gpus = resources.get('gres/gpu', sum(v for k,v in resources.items() if k.startswith('gres/gpu:')))
+            job['queue_req_gpus'] = gpus * max(1, job.get('array_task_count', 1))
 
 
 def fetch_nodes() -> list[str]:

@@ -48,7 +48,6 @@ const state = {
   userColors: {},
   gpuChart: null,
   cpuChart: null,
-  waitChart: null,
   queueChart: null,
   viewMode: 'users',   // 'users' | 'projects' | 'units'
   _lastFetchedMode: null,
@@ -149,18 +148,20 @@ function buildDatasets(userMap) {
     .filter(u => state.visibleUsers.has(u))
     .map(u => {
       const color = state.userColors[u] || '#888';
-      return {
-        label: u,
-        data: (userMap[u] || []).map((v, i) => ({
-          x: state.data.buckets[i],
-          y: v,
-        })),
+      const { buckets, bucket_durations_ms, bucket_size_ms } = state.data;
+      const data = (userMap[u] || []).map((y, i) => ({ x: buckets[i], y }));
+      const last = data.length - 1;
+      if (last >= 0) {
+        const duration = bucket_durations_ms?.[last] ?? bucket_size_ms;
+        if (duration > 0) data.push({ x: buckets[last] + duration, y: data[last].y });
+      }
+      return { label: u, data,
         fill: true,
         borderColor: color,
         backgroundColor: hexToRgba(color, 1.0),
         borderWidth: 1,
         pointRadius: 0,
-        tension: 0.2,
+        stepped: 'before',
         stack: 'stack',
       };
     });
@@ -170,15 +171,21 @@ function buildCapacityDatasets(resource) {
   const points = state.data.capacity_points || [];
   return [
     [resource, 'Installed capacity', '#e4e4e7', []],
-    [`drained_${resource}`, 'Draining / drained (included in installed)', '#fbbf24', [6, 4]],
-    [`down_${resource}`, 'Down / unavailable (included in installed)', '#f87171', [3, 4]],
+    [`drained_${resource}`, 'Installed minus draining / drained', '#fbbf24', [6, 4]],
+    [`down_${resource}`, 'Installed minus down / unavailable', '#f87171', [3, 4]],
   ].filter(([key], i) => i === 0 || points.some(p => p[key] > 0))
     .map(([key, label, color, dash]) => ({
-      label, data: points.map(p => ({ x: p.timestamp_ms, y: p[key] })),
+      label,
+      data: points.map(p => {
+        const installed = p[resource];
+        if (key === resource) return { x: p.timestamp_ms, y: installed };
+        const reduction = p[key] ?? 0;
+        return { x: p.timestamp_ms, y: installed == null ? null : installed - reduction, reduction };
+      }),
       isCapacity: true, fill: false, borderColor: color, borderDash: dash,
       // Chart.js "before" holds the previous value until the next timestamp.
       borderWidth: 2, pointRadius: 0, stepped: 'before', spanGaps: false,
-      stack: key, order: -10,
+      stack: key, order: key === resource ? -11 : -10,
     }));
 }
 
@@ -203,6 +210,23 @@ function chartMaximum(resource, userMap) {
   return Math.max(1, ...points, ...allocations);
 }
 
+const usageYAxisWidth = 48;
+const allocationTickFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+let queueTimeAxis;
+
+const queueTimeAxisSync = {
+  id: 'queueTimeAxisSync',
+  afterUpdate(chart) {
+    const { min, max, ticks } = chart.scales.x;
+    const next = { min, max, ticks: ticks.map(({ value, major, label }) => ({ value, major, label })) };
+    if (JSON.stringify(queueTimeAxis) === JSON.stringify(next)) return;
+    queueTimeAxis = next;
+    requestAnimationFrame(() => {
+      for (const chart of [state.gpuChart, state.cpuChart]) chart?.update('none');
+    });
+  },
+};
+
 function makeChartOptions(yMax, resource) {
   const gridColor = '#2a2a30';
   const tickColor = '#71717a';
@@ -223,6 +247,10 @@ function makeChartOptions(yMax, resource) {
         footerFont: { ...fontOpts, weight: '600' },
         callbacks: {
           label(ctx) {
+            if (ctx.raw?.reduction != null) {
+              if (ctx.raw.reduction === 0 || ctx.parsed.y == null) return null;
+              return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} (−${ctx.raw.reduction})`;
+            }
             if (ctx.parsed.y === 0) return null;
             return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}`;
           },
@@ -230,7 +258,8 @@ function makeChartOptions(yMax, resource) {
             const allocations = items.filter(i => !i.dataset.isCapacity);
             if (!allocations.length) return '';
             const total = allocations.reduce((s, i) => s + i.parsed.y, 0);
-            const available = state.data.capacity_buckets?.[resource]?.[allocations[0].dataIndex];
+            const index = Math.min(allocations[0].dataIndex, state.data.buckets.length - 1);
+            const available = state.data.capacity_buckets?.[resource]?.[index];
             return available > 0
               ? `Allocated: ${total.toFixed(1)} / ${available.toFixed(1)} (${(100 * total / available).toFixed(1)}%)`
               : `Allocated: ${total.toFixed(1)}; capacity unknown`;
@@ -240,16 +269,29 @@ function makeChartOptions(yMax, resource) {
     },
     scales: {
       x: {
-        type: 'time',
-        time: { displayFormats: { hour: 'ha', day: 'MMM d' } },
-        ticks: { major: { enabled: true }, color: tickColor, font: fontOpts, maxRotation: 0 },
+        type: 'time', offset: false,
+        afterDataLimits(scale) {
+          if (!queueTimeAxis) return;
+          scale.min = queueTimeAxis.min;
+          scale.max = queueTimeAxis.max;
+        },
+        afterBuildTicks(scale) {
+          if (queueTimeAxis) scale.ticks = queueTimeAxis.ticks.map(tick => ({ ...tick }));
+        },
+        ticks: { source: 'labels', autoSkip: false, major: { enabled: true },
+          color: tickColor, font: fontOpts, maxRotation: 0,
+          callback(value) {
+            return queueTimeAxis?.ticks.find(tick => tick.value === value)?.label ?? this.getLabelForValue(value);
+          },
+        },
         grid: { color: gridColor },
       },
       y: {
         stacked: true,
         max: yMax,
         min: 0,
-        ticks: { color: tickColor, font: fontOpts },
+        afterFit: scale => { scale.width = usageYAxisWidth; },
+        ticks: { color: tickColor, font: fontOpts, callback: value => allocationTickFormat.format(value) },
         grid: { color: gridColor },
       },
     },
@@ -298,10 +340,6 @@ function updateChartsVisibility() {
     state.cpuChart.data.datasets = [...buildDatasets(state.data.cpu_users), ...buildCapacityDatasets('cpus')];
     state.cpuChart.update('none');
   }
-  if (state.waitChart) {
-    state.waitChart.data.datasets = buildWaitTimeDatasets();
-    state.waitChart.update('none');
-  }
   if (state.queueChart) {
     state.queueChart.data.datasets = buildQueueDatasets();
     state.queueChart.update('none');
@@ -343,267 +381,107 @@ function renderMetrics() {
 
 // ── Wait time chart & metrics ─────────────────────────────────
 
+function queueMeasure() {
+  if (document.querySelector('input[name=queue-measure]:checked').value === 'jobs') return 'jobs';
+  return document.getElementById('queue-category').value === 'cpu_only' ? 'cpus' : 'gpus';
+}
+
 function buildQueueDatasets() {
-  const { waitData, allUsers, visibleUsers, userColors } = state;
-  if (!waitData) return [];
-  return allUsers
-    .filter(u => visibleUsers.has(u) && waitData.users[u])
-    .map(u => {
-      const color = userColors[u] || '#888';
-      return {
-        label: u,
-        data: waitData.users[u].map((v, i) => ({ x: waitData.buckets[i], y: v ?? 0 })),
-        backgroundColor: hexToRgba(color, 0.35),
-        borderColor: color,
-        borderWidth: 0,
-        stack: 'wait',
-        barPercentage: 1.0,
-        categoryPercentage: 1.0,
-      };
-    });
-}
-
-function buildWaitTimeDatasets() {
   const { waitData, visibleUsers } = state;
-  if (!waitData) return [];
-
-  const buildSeries = prefix => {
-    let previous = null;
-    return waitData.buckets.map((bucket, i) => {
-      let sum = 0;
-      let count = 0;
-      for (const key of visibleUsers) {
-        const series = waitData.wait_time_buckets?.[key];
-        if (!series) continue;
-        sum += series[`${prefix}_sum`]?.[i] || 0;
-        count += series[`${prefix}_count`]?.[i] || 0;
-      }
-      if (count > 0) previous = sum / count;
-      return { x: bucket, y: previous };
-    });
-  };
-
-  return [
-    {
-      label: 'CPU-only',
-      data: buildSeries('cpu_only'),
-      borderColor: '#10b981',
-      backgroundColor: '#10b981',
-      borderWidth: 2,
-      pointRadius: 1.5,
-      pointHoverRadius: 4,
-      stepped: 'after',
-      spanGaps: false,
-    },
-    {
-      label: '1–7 GPUs',
-      data: buildSeries('gpu_1_7'),
-      borderColor: '#3b82f6',
-      backgroundColor: '#3b82f6',
-      borderWidth: 2,
-      pointRadius: 1.5,
-      pointHoverRadius: 4,
-      stepped: 'after',
-      spanGaps: false,
-    },
-    {
-      label: '8+ GPUs',
-      data: buildSeries('gte8'),
-      borderColor: '#f59e0b',
-      backgroundColor: '#f59e0b',
-      borderWidth: 2,
-      pointRadius: 1.5,
-      pointHoverRadius: 4,
-      stepped: 'after',
-      spanGaps: false,
-    },
-  ];
+  const category = document.getElementById('queue-category').value;
+  return waitData ? PendingAge.ageBands(waitData, visibleUsers, category, queueMeasure()) : [];
 }
 
-function renderWaitChart() {
-  const datasets = buildWaitTimeDatasets();
-  const gridColor = '#2a2a30';
-  const tickColor = '#71717a';
-  const fontOpts = { family: '"JetBrains Mono","Fira Code",ui-monospace,monospace', size: 11 };
-
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    interaction: { mode: 'index', intersect: false },
-    plugins: {
-      legend: {
-        display: true,
-        position: 'top',
-        align: 'end',
-        labels: { color: tickColor, font: fontOpts, usePointStyle: true, boxWidth: 8 },
-      },
-      tooltip: {
-        backgroundColor: '#18181c',
-        borderColor: '#2a2a30',
-        borderWidth: 1,
-        titleFont: fontOpts,
-        bodyFont: fontOpts,
-        callbacks: {
-          label(ctx) {
-            if (ctx.parsed.y == null) return null;
-            return ` ${ctx.dataset.label}: ${fmtWait(ctx.parsed.y)}`;
-          },
-        },
-      },
-    },
-    scales: {
-      x: {
-        type: 'time',
-        offset: false,
-        time: { displayFormats: { hour: 'ha', day: 'MMM d' } },
-        ticks: { major: { enabled: true }, color: tickColor, font: fontOpts, maxRotation: 0 },
-        grid: { color: gridColor, offset: false },
-      },
-      y: {
-        min: 0,
-        suggestedMax: 72,
-        ticks: {
-          color: tickColor,
-          font: fontOpts,
-          stepSize: 24,
-          callback: value => `${value}h`,
-        },
-        title: { display: true, text: 'Hours', color: tickColor, font: fontOpts },
-        grid: {
-          color: ctx => [24, 48, 72].includes(Number(ctx.tick.value)) ? '#52525b' : gridColor,
-          lineWidth: ctx => [24, 48, 72].includes(Number(ctx.tick.value)) ? 1.5 : 1,
-        },
-      },
-    },
-  };
-
-  if (state.waitChart) {
-    state.waitChart.data.datasets = datasets;
-    state.waitChart.update();
-  } else {
-    state.waitChart = new Chart(
-      document.getElementById('wait-chart'),
-      { type: 'line', data: { datasets }, options }
-    );
-  }
-}
+const queueBandGlow = {
+  id: 'queueBandGlow',
+  beforeDatasetDraw(chart, { index }) {
+    const { glow } = chart.data.datasets[index];
+    if (!glow) return;
+    chart.ctx.save();
+    chart.ctx.shadowColor = glow;
+    chart.ctx.shadowBlur = 8;
+  },
+  afterDatasetDraw(chart, { index }) {
+    if (chart.data.datasets[index].glow) chart.ctx.restore();
+  },
+};
 
 function renderQueueChart() {
+  if (!state.waitData) return;
   const datasets = buildQueueDatasets();
+  const { buckets, bucket_durations_ms, bucket_size_ms } = state.data;
+  const last = buckets.length - 1;
+  const rangeEnd = last >= 0 ? buckets[last] + (bucket_durations_ms?.[last] ?? bucket_size_ms) : undefined;
+  const modeLabel = document.getElementById('queue-category').value === 'cpu_only' ? 'CPUs' : 'GPUs';
+  document.getElementById('queue-resource-label').textContent = modeLabel;
+  const unit = queueMeasure() === 'jobs' ? 'jobs' : modeLabel;
   const gridColor = '#2a2a30';
   const tickColor = '#71717a';
-  const fontOpts = { family: '"JetBrains Mono","Fira Code",ui-monospace,monospace', size: 11 };
-
+  const fontOpts = { family: '"JetBrains Mono",ui-monospace,monospace', size: 11 };
+  const formatDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const formatCount = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
   const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
+    responsive: true, maintainAspectRatio: false, animation: false,
     interaction: { mode: 'index', intersect: false },
     plugins: {
-      legend: { display: false },
+      legend: { display: true, position: 'top', align: 'end',
+        labels: { color: tickColor, font: fontOpts, usePointStyle: true, boxWidth: 8, padding: 10 } },
       tooltip: {
-        backgroundColor: '#18181c',
-        borderColor: '#2a2a30',
-        borderWidth: 1,
-        titleFont: fontOpts,
-        bodyFont: fontOpts,
-        footerFont: { ...fontOpts, weight: '600' },
+        backgroundColor: '#18181c', borderColor: '#2a2a30', borderWidth: 1,
+        titleFont: fontOpts, bodyFont: fontOpts,
         callbacks: {
+          title(items) {
+            const interval = items[0]?.raw;
+            return interval ? formatDate.formatRange(new Date(interval.startTime), new Date(interval.endTime)) : '';
+          },
           label(ctx) {
-            if (ctx.parsed.y === 0) return null;
-            return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}`;
+            return ctx.parsed.y == null ? null : `${ctx.dataset.label}: ${formatCount.format(ctx.parsed.y)} ${unit}`;
           },
           footer(items) {
-            const total = items.reduce((s, i) => s + i.parsed.y, 0);
-            return total > 0 ? `Total: ${total.toFixed(1)}` : null;
+            const interval = items[0]?.raw;
+            if (!interval) return [];
+            const total = items.reduce((sum, item) => sum + (item.parsed.y ?? 0), 0);
+            return [`Average total: ${formatCount.format(total)} ${unit}`, `Samples: ${interval.known}/${interval.expected}`];
           },
         },
       },
     },
     scales: {
-      x: {
-        type: 'time',
-        offset: false,
+      x: { type: 'time', offset: false, stacked: true,
+        min: buckets[0] ?? datasets[0]?.data[0]?.startTime,
+        max: rangeEnd ?? datasets[0]?.data.at(-1)?.endTime,
         time: { displayFormats: { hour: 'ha', day: 'MMM d' } },
         ticks: { major: { enabled: true }, color: tickColor, font: fontOpts, maxRotation: 0 },
-        grid: { color: gridColor, offset: false },
-      },
-      y: {
-        stacked: true,
-        min: 0,
-        ticks: { color: tickColor, font: fontOpts },
-        grid: { color: gridColor },
-      },
+        grid: { color: gridColor, offset: false } },
+      y: { min: 0, stacked: true, afterFit: scale => { scale.width = usageYAxisWidth; },
+        ticks: { color: tickColor, font: fontOpts }, grid: { color: gridColor } },
     },
   };
-
   if (state.queueChart) {
     state.queueChart.data.datasets = datasets;
+    state.queueChart.options = options;
     state.queueChart.update();
   } else {
-    state.queueChart = new Chart(
-      document.getElementById('queue-chart'),
-      { type: 'bar', data: { datasets }, options }
-    );
+    state.queueChart = new Chart(document.getElementById('queue-chart'), {
+      type: 'bar', data: { datasets }, options, plugins: [queueBandGlow, queueTimeAxisSync],
+    });
   }
 }
+
 
 function renderWaitMetrics() {
   const { waitData, visibleUsers } = state;
   const grid = document.getElementById('wait-stats-grid');
   if (!waitData || !grid) return;
-
-  let sumWait = 0, countWait = 0, totalJobs = 0;
-  let sumWait8Gpu = 0, countWait8Gpu = 0;
-  const p90s = [];
-
-  for (const u of visibleUsers) {
-    const s = waitData.stats[u];
-    if (s) {
-      totalJobs += s.job_count;
-      sumWait += s.avg * s.job_count;
-      countWait += s.job_count;
-      p90s.push(s.p90);
-    }
-    const large = waitData.stats_8gpu?.[u];
-    if (large) {
-      sumWait8Gpu += large.avg * large.job_count;
-      countWait8Gpu += large.job_count;
-    }
-  }
-
-  const overallAvg = countWait > 0 ? sumWait / countWait : null;
-  const avg8Gpu = countWait8Gpu > 0 ? sumWait8Gpu / countWait8Gpu : null;
-  const overallP90 = p90s.length ? Math.max(...p90s) : null;
-
-  // Average queued GPUs = area under chart / window length = mean bar height
-  const bucketHours = waitData.bucket_size_ms / 3_600_000;
-  const windowHours = waitData.buckets.length * bucketHours;
-  let gpuHrsInQueue = 0;
-  for (const u of visibleUsers) {
-    if (waitData.users[u]) {
-      gpuHrsInQueue += waitData.users[u].reduce((s, v) => s + v, 0) * bucketHours;
-    }
-  }
-  const avgQueued = windowHours > 0 ? gpuHrsInQueue / windowHours : null;
-
+  const last = waitData.buckets.length - 1;
+  const stats = last >= 0 ? PendingAge.summarize(waitData, visibleUsers, document.getElementById('queue-category').value, last)
+    : { median: null, p90: null, count: null };
   const rows = [
-    ['Avg wait',     overallAvg,                              false, false],
-    ['Avg wait 8+ GPU', avg8Gpu,                              false, false],
-    ['Worst 10%',    overallP90,                              false, false],
-    ['Avg queued',   avgQueued > 0 ? avgQueued : null,        false, 'gpus'],
-    ['Jobs',         totalJobs > 0 ? totalJobs : null,        false, true],
+    ['Median', stats.median === null ? '—' : fmtWait(stats.median / 3600000)],
+    ['P90', stats.p90 === null ? '—' : fmtWait(stats.p90 / 3600000)],
+    ['Pending jobs', stats.count === null ? '—' : stats.count.toLocaleString()],
   ];
-
-  grid.innerHTML = rows.map(([label, val, muted, type]) => {
-    const display = val === null ? '—'
-      : type === true   ? val.toLocaleString()
-      : type === 'gpus' ? val.toFixed(1)
-      : fmtWait(val);
-    return `<span class="wait-stat-label">${label}</span>`
-         + `<span class="wait-stat-value${muted ? ' muted' : ''}">${display}</span>`;
-  }).join('');
+  grid.innerHTML = rows.map(([label, value]) => `<span class="wait-stat-label">${label}</span><span class="wait-stat-value">${value}</span>`).join('');
 }
 
 // ── Sidebar ──────────────────────────────────────────────────
@@ -726,7 +604,7 @@ async function fetchAndRender() {
   try {
     const [usageRes, waitRes] = await Promise.all([
       fetch(apiUrl(`api/usage?from=${from_ms}&to=${to_ms}&group_by=${groupBy}`)),
-      fetch(apiUrl(`api/wait?from=${from_ms}&to=${to_ms}&group_by=${groupBy}`)),
+      fetch(apiUrl(`api/pending-age?from=${from_ms}&to=${to_ms}&group_by=${groupBy}`)),
     ]);
     if (!usageRes.ok) throw new Error(`HTTP ${usageRes.status}`);
     if (!waitRes.ok) throw new Error(`HTTP ${waitRes.status}`);
@@ -744,6 +622,7 @@ async function fetchAndRender() {
     ...Object.keys(data.cpu_users || {}),
     ...Object.keys(state.waitData.users || {}),
   ]);
+  const allPreviouslySelected = state.allUsers.length > 0 && state.allUsers.every(key => state.visibleUsers.has(key));
   // Sort by GPU usage descending
   state.allUsers = [...userSet].sort((a, b) => {
     const sumA = resourceHours(data.users[a], data);
@@ -752,9 +631,9 @@ async function fetchAndRender() {
   });
 
   // Assign colors: use server-provided colors for project/unit mode, PALETTE for user mode
-  if (groupBy !== 'user' && data.colors && Object.keys(data.colors).length > 0) {
+  if (groupBy !== 'user') {
     state.allUsers.forEach(key => {
-      state.userColors[key] = data.colors[key] || '#888888';
+      state.userColors[key] = data.colors?.[key] || state.waitData.colors?.[key] || '#888888';
     });
   } else {
     state.allUsers.forEach((u, i) => {
@@ -769,7 +648,7 @@ async function fetchAndRender() {
     state.visibleUsers = new Set(state.allUsers);
     state._lastFetchedMode = state.viewMode;
   } else {
-    if (state.visibleUsers.size === 0) {
+    if (allPreviouslySelected || state.visibleUsers.size === 0) {
       state.visibleUsers = new Set(state.allUsers);
     } else {
       for (const u of [...state.visibleUsers]) {
@@ -780,10 +659,9 @@ async function fetchAndRender() {
 
   updateSidebarLabel();
   renderSidebar(document.getElementById('user-search').value);
+  renderQueueChart();
   renderCharts();
   renderMetrics();
-  renderWaitChart();
-  renderQueueChart();
   renderWaitMetrics();
 
   overlay.classList.remove('visible');
@@ -1266,6 +1144,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('apply-btn').addEventListener('click', fetchAndRender);
+  document.getElementById('queue-category').addEventListener('change', () => {
+    renderQueueChart();
+    renderWaitMetrics();
+  });
+  document.querySelectorAll('input[name=queue-measure]').forEach(input => {
+    input.addEventListener('change', renderQueueChart);
+  });
 
   document.querySelectorAll('.preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
