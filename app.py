@@ -117,7 +117,8 @@ def api_job_gpu(job_id):
             return jsonify(prom_gpu.get_gpu_trend(job, int(time.time() * 1000)))
         except prom_gpu.PrometheusError:
             return jsonify({"error": "Prometheus unavailable"}), 503
-    return jsonify(history.get_gpu_trend(config.HISTORY_DB_PATH, job_id, submit))
+    return jsonify(history.get_gpu_trend(config.HISTORY_DB_PATH, job_id, submit,
+                                         per_gpu=request.args.get("per_gpu") == "1"))
 
 
 def get_partitions(meta: dict | None = None) -> dict[str, dict[str, int]]:
@@ -236,6 +237,19 @@ def api_usage():
         group_by = "user"
     data = history.get_usage_buckets(config.HISTORY_DB_PATH, from_ms, to_ms, group_by)
     return jsonify(data)
+
+
+@app.route("/api/pending-age")
+def api_pending_age():
+    """Sample eligible pending jobs at timestamps within the requested range."""
+    from_ms = request.args.get("from", type=int)
+    to_ms = request.args.get("to", type=int)
+    if from_ms is None or to_ms is None or from_ms >= to_ms:
+        return jsonify({"error": "A valid from/to range is required"}), 400
+    group_by = request.args.get("group_by", "user")
+    if group_by not in ("user", "project", "unit"):
+        group_by = "user"
+    return jsonify(history.get_pending_age_buckets(config.HISTORY_DB_PATH, from_ms, to_ms, group_by))
 
 
 @app.route("/api/wait")
@@ -455,7 +469,8 @@ def run_recorder_cycle():
             default=0,
         ) or config.CPUS_PER_NODE
         
-        history.upsert_jobs(config.HISTORY_DB_PATH, jobs, now_ms)
+        history.upsert_jobs(config.HISTORY_DB_PATH, jobs, now_ms,
+                            queue_max_gap_ms=max(30000, get_recorder_interval() * 3000))
         history.update_meta(config.HISTORY_DB_PATH, nodes, node_states, node_reasons,
                            gpus_per_node, cpus_per_node, now_ms, partitions,
                            node_capacities)
