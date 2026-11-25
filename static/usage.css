@@ -149,6 +149,7 @@ body.usage-page {
 .cpu-dot { background: #10b981; }
 .wait-dot { background: #f59e0b; }
 .queue-dot { background: #a855f7; }
+.waiting-dot { background: #f43f5e; }
 
 .chart-description {
   color: var(--text-muted);
@@ -983,3 +984,77 @@ body.usage-page {
   gap: 0.35rem;
   white-space: nowrap;
 }
+
+/* ── Waiting people ───────────────────────────────────────── */
+.waiting-unavailable {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.waiting-table-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: -1rem;
+  margin-left: calc(170px + 1rem);
+}
+
+.waiting-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.waiting-table-wrap:empty { display: none; }
+
+.waiting-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.waiting-table thead tr {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.waiting-table th {
+  padding: 0.4rem 0.5rem;
+  text-align: right;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border-bottom: 2px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.waiting-table th:first-child,
+.waiting-table td:first-child { text-align: left; }
+
+.waiting-table th.sorted { color: var(--text); }
+
+.waiting-table td {
+  padding: 0.3rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.waiting-table tr.estimate td { color: var(--text-muted); }
+
+.waiting-table .estimate-mark { margin-left: 0.3rem; font-size: 10px; color: #fbbf24; }
+
+.waiting-footnote:empty { display: none; }

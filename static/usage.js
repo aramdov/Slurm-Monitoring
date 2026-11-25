@@ -49,6 +49,9 @@ const state = {
   gpuChart: null,
   cpuChart: null,
   queueChart: null,
+  waitingData: null,   // GET /api/waiting response, null when that call failed
+  waitingChart: null,
+  waitingSort: { key: 'waiting_h', descending: true },
   viewMode: 'users',   // 'users' | 'projects' | 'units'
   _lastFetchedMode: null,
   unitsData: null,     // cached GET /api/units response
@@ -344,6 +347,11 @@ function updateChartsVisibility() {
     state.queueChart.data.datasets = buildQueueDatasets();
     state.queueChart.update('none');
   }
+  if (state.waitingChart && state.waitingData) {
+    state.waitingChart.data.datasets = buildWaitingDatasets();
+    state.waitingChart.update('none');
+  }
+  renderWaitingTable();
   renderWaitMetrics();
 }
 
@@ -484,6 +492,190 @@ function renderWaitMetrics() {
   grid.innerHTML = rows.map(([label, value]) => `<span class="wait-stat-label">${label}</span><span class="wait-stat-value">${value}</span>`).join('');
 }
 
+// ── Waiting people ──────────────────────────────────────────
+
+function waitingSelection() {
+  return state.viewMode === 'users' ? state.visibleUsers : null;
+}
+
+function fmtWaitingHours(h) {
+  if (h == null) return '—';
+  return h === 0 ? '0' : h < 10 ? h.toFixed(1) : Math.round(h).toLocaleString();
+}
+
+function fmtGpus(avg, max) {
+  if (avg == null) return '—';
+  const value = Number.isInteger(avg) ? String(avg) : avg.toFixed(1);
+  return max != null && max !== avg ? `${value} / ${max}` : value;
+}
+
+function renderWaitingStats() {
+  const grid = document.getElementById('waiting-stats-grid');
+  const data = state.waitingData;
+  if (!grid) return;
+  const current = data?.current;
+  const asOf = current ? new Date(current.as_of_ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—';
+  const rows = [
+    ['Waiting now (2h+)', current ? current.people_2h.toLocaleString() : '—'],
+    ['Waiting now (24h+)', current ? current.people_24h.toLocaleString() : '—'],
+    ['As of', asOf],
+  ];
+  grid.innerHTML = rows.map(([label, value]) => `<span class="wait-stat-label">${label}</span><span class="wait-stat-value${value === '—' || label === 'As of' ? ' muted' : ''}">${value}</span>`).join('');
+}
+
+function buildWaitingDatasets() {
+  const data = state.waitingData;
+  if (!data) return [];
+  const rows = Waiting.series(data, waitingSelection());
+  const point = key => rows.map(row => ({ ...row, x: row.x, y: row[key] }));
+  const barColor = color => ctx => hexToRgba(color, ctx.raw?.estimate ? 0.4 : 0.85);
+  return [
+    { type: 'bar', label: 'Waiting 2h+, nothing running', data: point('idle2'), stack: 'w2', order: 2,
+      backgroundColor: barColor('#f43f5e'), borderWidth: 0 },
+    { type: 'bar', label: 'Waiting 2h+, already running GPUs', data: point('busy2'), stack: 'w2', order: 2,
+      backgroundColor: barColor('#fb923c'), borderWidth: 0 },
+    { type: 'line', label: 'Waiting 24h+', data: point('total24'), stack: 'w24', order: 1,
+      borderColor: '#facc15', backgroundColor: '#facc15', borderWidth: 2, pointRadius: 0, spanGaps: false, fill: false },
+    { type: 'line', label: 'Waited 2h+ at any point', data: point('any2'), stack: 'any', order: 1,
+      borderColor: '#a1a1aa', backgroundColor: '#a1a1aa', borderWidth: 1.5, borderDash: [4, 4],
+      pointRadius: 0, spanGaps: false, fill: false },
+  ];
+}
+
+function renderWaitingChart() {
+  const unavailable = document.getElementById('waiting-unavailable');
+  const canvas = document.getElementById('waiting-chart');
+  if (!state.waitingData) {
+    if (unavailable) unavailable.hidden = false;
+    if (canvas) canvas.hidden = true;
+    renderWaitingStats();
+    return;
+  }
+  unavailable.hidden = true;
+  canvas.hidden = false;
+  document.getElementById('waiting-selection-note').hidden = state.viewMode === 'users';
+  renderWaitingStats();
+  const datasets = buildWaitingDatasets();
+  const { buckets, bucket_durations_ms, bucket_size_ms } = state.data;
+  const last = buckets.length - 1;
+  const rangeEnd = last >= 0 ? buckets[last] + (bucket_durations_ms?.[last] ?? bucket_size_ms) : undefined;
+  const gridColor = '#2a2a30';
+  const tickColor = '#71717a';
+  const fontOpts = { family: '"JetBrains Mono",ui-monospace,monospace', size: 11 };
+  const formatDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const formatCount = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+  const options = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: true, position: 'top', align: 'end',
+        labels: { color: tickColor, font: fontOpts, usePointStyle: true, boxWidth: 8, padding: 10 } },
+      tooltip: {
+        backgroundColor: '#18181c', borderColor: '#2a2a30', borderWidth: 1,
+        titleFont: fontOpts, bodyFont: fontOpts,
+        callbacks: {
+          title(items) {
+            const interval = items[0]?.raw;
+            return interval ? formatDate.formatRange(new Date(interval.startTime), new Date(interval.endTime)) : '';
+          },
+          label(ctx) {
+            if (ctx.parsed.y == null) return null;
+            const suffix = ctx.dataset.label === 'Waited 2h+ at any point' ? '' : ' on average';
+            return `${ctx.dataset.label}: ${formatCount.format(ctx.parsed.y)} people${suffix}`;
+          },
+          footer(items) {
+            const interval = items[0]?.raw;
+            if (!interval) return [];
+            const lines = [`Samples: ${interval.known}/${interval.expected}`];
+            if (interval.estimate) lines.push('Estimate from accounting, no pending reasons');
+            return lines;
+          },
+        },
+      },
+    },
+    scales: {
+      x: { type: 'time', offset: false, stacked: true,
+        min: buckets[0] ?? datasets[0]?.data[0]?.startTime,
+        max: rangeEnd ?? datasets[0]?.data.at(-1)?.endTime,
+        time: { displayFormats: { hour: 'ha', day: 'MMM d' } },
+        ticks: { major: { enabled: true }, color: tickColor, font: fontOpts, maxRotation: 0 },
+        grid: { color: gridColor, offset: false } },
+      y: { min: 0, stacked: true, afterFit: scale => { scale.width = usageYAxisWidth; },
+        title: { display: true, text: 'people', color: tickColor, font: fontOpts },
+        ticks: { color: tickColor, font: fontOpts, precision: 0 }, grid: { color: gridColor } },
+    },
+  };
+  if (state.waitingChart) {
+    state.waitingChart.data.datasets = datasets;
+    state.waitingChart.options = options;
+    state.waitingChart.update();
+  } else {
+    state.waitingChart = new Chart(canvas, { type: 'bar', data: { datasets }, options });
+  }
+}
+
+const waitingColumns = [
+  { key: 'user', label: 'Person', format: (row) => escHtml(row.user) },
+  { key: 'waiting_h', label: 'Waiting (h)', format: row => fmtWaitingHours(row.waiting_h) },
+  { key: 'waiting_24h_h', label: 'of which 24h+ (h)', format: row => fmtWaitingHours(row.waiting_24h_h) },
+  { key: 'longest_wait_h', label: 'Longest wait', format: row => row.longest_wait_h == null ? '—' : fmtWait(row.longest_wait_h) },
+  { key: 'current_wait_h', label: 'Waiting now', format: row => row.current_wait_h == null ? '' : fmtWait(row.current_wait_h) },
+  { key: 'avg_asked_gpus', label: 'GPUs asked', format: row => fmtGpus(row.avg_asked_gpus, row.max_asked_gpus) },
+  { key: 'avg_running_gpus', label: 'GPUs running meanwhile', format: row => fmtGpus(row.avg_running_gpus, row.max_running_gpus) },
+  { key: 'idle_h', label: 'With 0 running (h)', format: row => fmtWaitingHours(row.idle_h) },
+  { key: 'capped_h', label: 'At own cap (h)', format: row => fmtWaitingHours(row.capped_h) },
+];
+
+function renderWaitingFootnote() {
+  const note = document.getElementById('waiting-footnote');
+  const data = state.waitingData;
+  if (!note) return;
+  if (!data) { note.textContent = ''; return; }
+  const { caps, default_cap, excluded_partitions, unmapped_qos } = data.rules;
+  const capText = Object.entries(caps).map(([qos, cap]) => `${qos} ${cap == null ? 'none' : cap}`).join(', ');
+  const parts = [`Own-cap rule (GPUs per user): ${capText}; unknown QOS ${default_cap ?? 'none'}.`,
+    `Excluded partitions: ${excluded_partitions.length ? excluded_partitions.join(', ') : 'none'}.`,
+    'Averages divide by recorded samples; hours are samples × step. Faded bars are estimates from accounting.'];
+  if (unmapped_qos.length) parts.push(`QOS without a configured cap: ${unmapped_qos.join(', ')}.`);
+  const unclassified = Object.entries(data.unclassified_reasons || {});
+  if (unclassified.length) {
+    parts.push(`Not counted, unclassified reasons (job samples): ${unclassified.map(([reason, count]) => `${reason} ${count}`).join(', ')}.`);
+  }
+  note.textContent = parts.join(' ');
+}
+
+function renderWaitingTable() {
+  const container = document.getElementById('waiting-table');
+  if (!container) return;
+  renderWaitingFootnote();
+  const data = state.waitingData;
+  if (!data) { container.innerHTML = ''; return; }
+  const { key, descending } = state.waitingSort;
+  const rows = Waiting.tableRows(data, waitingSelection(), key, descending);
+  const head = waitingColumns.map(column => {
+    const arrow = column.key === key ? (descending ? ' ▼' : ' ▲') : '';
+    return `<th data-key="${column.key}" class="${column.key === key ? 'sorted' : ''}">${column.label}${arrow}</th>`;
+  }).join('');
+  const body = rows.length ? rows.map(row => {
+    const estimate = row.estimate_h > 0;
+    const cells = waitingColumns.map((column, i) => {
+      const mark = i === 0 && estimate ? `<span class="estimate-mark" title="${fmtWaitingHours(row.estimate_h)} h from the accounting estimate">est.</span>` : '';
+      return `<td>${column.format(row)}${mark}</td>`;
+    }).join('');
+    return `<tr class="${estimate ? 'estimate' : ''}">${cells}</tr>`;
+  }).join('') : `<tr><td colspan="${waitingColumns.length}">Nobody waited 2h+ or sat at their cap in this range.</td></tr>`;
+  container.innerHTML = `<table class="waiting-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  container.querySelectorAll('th').forEach(th => {
+    th.addEventListener('click', () => {
+      const next = th.dataset.key;
+      state.waitingSort = next === state.waitingSort.key
+        ? { key: next, descending: !state.waitingSort.descending }
+        : { key: next, descending: next !== 'user' };
+      renderWaitingTable();
+    });
+  });
+}
+
 // ── Sidebar ──────────────────────────────────────────────────
 
 function fmtSidebarH(h) {
@@ -601,6 +793,11 @@ async function fetchAndRender() {
   const groupBy = state.viewMode === 'users' ? 'user'
                 : state.viewMode === 'projects' ? 'project' : 'unit';
 
+  // Separate so a failure here keeps the rest of the page.
+  const waitingPromise = fetch(apiUrl(`api/waiting?from=${from_ms}&to=${to_ms}&tz_offset_min=${new Date(from_ms).getTimezoneOffset()}`))
+    .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+    .catch(err => { console.error('Waiting view unavailable', err); return null; });
+
   try {
     const [usageRes, waitRes] = await Promise.all([
       fetch(apiUrl(`api/usage?from=${from_ms}&to=${to_ms}&group_by=${groupBy}`)),
@@ -615,6 +812,7 @@ async function fetchAndRender() {
     return;
   }
 
+  state.waitingData = await waitingPromise;
   const { data } = state;
 
   const userSet = new Set([
@@ -622,6 +820,11 @@ async function fetchAndRender() {
     ...Object.keys(data.cpu_users || {}),
     ...Object.keys(state.waitData.users || {}),
   ]);
+  if (groupBy === 'user' && state.waitingData) {
+    // A person who only waited, or sat at their own cap, still needs a sidebar row.
+    for (const user of Object.keys(state.waitingData.users || {})) userSet.add(user);
+    for (const row of state.waitingData.people || []) userSet.add(row.user);
+  }
   const allPreviouslySelected = state.allUsers.length > 0 && state.allUsers.every(key => state.visibleUsers.has(key));
   // Sort by GPU usage descending
   state.allUsers = [...userSet].sort((a, b) => {
@@ -660,6 +863,8 @@ async function fetchAndRender() {
   updateSidebarLabel();
   renderSidebar(document.getElementById('user-search').value);
   renderQueueChart();
+  renderWaitingChart();
+  renderWaitingTable();
   renderCharts();
   renderMetrics();
   renderWaitMetrics();
@@ -1146,6 +1351,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('apply-btn').addEventListener('click', fetchAndRender);
   document.getElementById('queue-category').addEventListener('change', () => {
     renderQueueChart();
+    renderWaitingChart();
+    renderWaitingTable();
     renderWaitMetrics();
   });
   document.querySelectorAll('input[name=queue-measure]').forEach(input => {
