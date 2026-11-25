@@ -519,7 +519,7 @@ def start_recorder():
 
 # Start one recorder in the serving process. Tests and maintenance imports can
 # explicitly suppress it to avoid creating a second collector.
-if not config.DISABLE_RECORDER:
+if not config.recorder_disabled():
     start_recorder()
 
 

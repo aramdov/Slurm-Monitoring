@@ -5,9 +5,14 @@ import os
 PORT = int(os.environ.get("SLURM_DASHBOARD_PORT", "19526"))
 HOST = os.environ.get("SLURM_DASHBOARD_HOST", "0.0.0.0")
 ADMIN_TOKEN = os.environ.get("SLURM_DASHBOARD_ADMIN_TOKEN", "")
-DISABLE_RECORDER = os.environ.get("SLURM_DASHBOARD_DISABLE_RECORDER", "").lower() in (
-    "1", "true", "yes",
-)
+
+
+def recorder_disabled() -> bool:
+    """Read at call time: config may be imported (e.g. via slurm) before a caller sets the flag."""
+    return os.environ.get("SLURM_DASHBOARD_DISABLE_RECORDER", "").lower() in ("1", "true", "yes")
+
+
+DISABLE_RECORDER = recorder_disabled()  # import-time value, kept for existing callers
 GPUS_PER_NODE = 8
 CPUS_PER_NODE = 224
 REFRESH_INTERVALS = [5, 10, 30, 60]  # seconds
