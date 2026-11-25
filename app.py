@@ -252,6 +252,18 @@ def api_pending_age():
     return jsonify(history.get_pending_age_buckets(config.HISTORY_DB_PATH, from_ms, to_ms, group_by))
 
 
+@app.route("/api/waiting")
+def api_waiting():
+    """People waiting 2h+/24h+ on a sample grid. Params: from, to (ms), tz_offset_min (JS sign)."""
+    from_ms = request.args.get("from", type=int)
+    to_ms = request.args.get("to", type=int)
+    if from_ms is None or to_ms is None or from_ms >= to_ms:
+        return jsonify({"error": "A valid from/to range is required"}), 400
+    tz_offset_min = request.args.get("tz_offset_min", default=0, type=int)
+    tz_offset_min = max(-840, min(720, tz_offset_min))
+    return jsonify(history.get_waiting_people(config.HISTORY_DB_PATH, from_ms, to_ms, tz_offset_min))
+
+
 @app.route("/api/wait")
 def api_wait():
     """Get job wait time buckets and stats. Params: from (ms), to (ms), group_by (user|project|unit)."""

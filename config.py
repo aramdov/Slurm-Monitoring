@@ -1,4 +1,5 @@
 """App config. Nodes discovered from sinfo; GPUS/CPUS_PER_NODE are fallbacks when sinfo has no capacity."""
+import json
 import os
 
 PORT = int(os.environ.get("SLURM_DASHBOARD_PORT", "19526"))
@@ -45,3 +46,13 @@ PROJECT_PALETTE = [
 # Disk usage tracking
 DISK_MIN_SIZE_GB = 200
 DISK_RETENTION_DAYS = 14
+
+# Per-person waiting view (Usage page, /api/waiting)
+WAITING_THRESHOLDS_H = (2, 24)
+# Per-user GPU cap by QOS (sacctmgr show qos format=name,maxtrespu). None = no cap.
+# Checked 2026-11-24. Update when a cap changes.
+WAITING_QOS_GPU_CAPS = json.loads(os.environ.get("SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS", "null")) or {
+    "researcher": 35, "pi": 16, "student": 1, "admin": 64, "golf": 16, "normal": None,
+}
+WAITING_DEFAULT_GPU_CAP = 35          # used when a job's QOS is unknown
+WAITING_EXCLUDED_PARTITIONS = ("rtx",)

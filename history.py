@@ -870,6 +870,23 @@ def get_pending_age_buckets(db_path: str, from_ms: int, to_ms: int, group_by: st
             conn.close()
 
 
+def get_waiting_people(db_path: str, from_ms: int, to_ms: int, tz_offset_min: int = 0) -> dict:
+    """People waiting 2h+/24h+ for GPUs the cluster holds back (see waiting.py)."""
+    import config
+    import waiting
+    with _db_lock:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return waiting.get_waiting(
+                conn, from_ms, to_ms, tz_offset_min,
+                caps=config.WAITING_QOS_GPU_CAPS,
+                default_cap=config.WAITING_DEFAULT_GPU_CAP,
+                excluded_partitions=config.WAITING_EXCLUDED_PARTITIONS,
+                thresholds_h=config.WAITING_THRESHOLDS_H)
+        finally:
+            conn.close()
+
 
 def get_wait_buckets(db_path: str, from_ms: int, to_ms: int, group_by: str = 'user') -> dict:
     """Compute per-entity queued GPU counts per bucket and wait time stats.
