@@ -53,6 +53,7 @@ WAITING_THRESHOLDS_H = (2, 24)
 # Checked 2026-11-24. Update when a cap changes.
 WAITING_QOS_GPU_CAPS = json.loads(os.environ.get("SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS", "null")) or {
     "researcher": 35, "pi": 16, "student": 1, "admin": 64, "golf": 16, "normal": None,
+    "research8_fullnode_guard": None,
 }
 WAITING_DEFAULT_GPU_CAP = 35          # used when a job's QOS is unknown
 WAITING_EXCLUDED_PARTITIONS = ("rtx",)
