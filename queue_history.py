@@ -44,6 +44,9 @@ def init(conn):
             max_gap_ms INTEGER NOT NULL, successful_polls INTEGER NOT NULL
         );
     ''')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(queue_observation_segments)')}
+    if 'qos' not in columns:
+        conn.execute('ALTER TABLE queue_observation_segments ADD COLUMN qos TEXT')
 
 
 def record(conn, jobs, timestamp_ms, max_gap_ms=90000):
@@ -64,7 +67,7 @@ def record(conn, jobs, timestamp_ms, max_gap_ms=90000):
                   job.get('eligible_time'), job.get('dependency'),
                   int(bool(job.get('queue_details_observed'))), job.get('start_time'),
                   job.get('partition') or '', job.get('queue_req_gpus', job.get('req_gpus', 0)),
-                  job.get('req_cpus', 0), job.get('array_task_count', 1))
+                  job.get('req_cpus', 0), job.get('array_task_count', 1), job.get('qos'))
         signature = json.dumps(values, separators=(',', ':'))
         previous = heads.get(key)
         contiguous = previous and previous[3] == SESSION and 0 < timestamp_ms-previous[2] <= max_gap_ms
@@ -77,8 +80,8 @@ def record(conn, jobs, timestamp_ms, max_gap_ms=90000):
         cursor = conn.execute('''INSERT INTO queue_observation_segments
             (job_id,submit_time_ms,first_ms,last_ms,previous_last_ms,session,signature,
              state,reason,eligible_time_ms,dependency,details_observed,start_time_ms,
-             partition,req_gpus,req_cpus,array_task_count,observations)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)''',
+             partition,req_gpus,req_cpus,array_task_count,qos,observations)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)''',
             (*key, timestamp_ms, timestamp_ms, previous[2] if contiguous else None,
              SESSION, signature, *values))
         conn.execute('INSERT OR REPLACE INTO queue_observation_heads VALUES (?,?,?)',

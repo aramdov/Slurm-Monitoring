@@ -296,7 +296,7 @@ def _fill_queue_details(jobs: list[dict[str, Any]]) -> None:
     out = _run(['scontrol', '-a', 'show', 'job', '-o'], require_success=True)
     details = {}
     for line in out.splitlines():
-        fields = dict(re.findall(r'(?:^|\s)(JobId|ArrayJobId|ArrayTaskId|SubmitTime|JobState|Reason|EligibleTime|Dependency|ReqTRES)=(\S+)', line))
+        fields = dict(re.findall(r'(?:^|\s)(JobId|ArrayJobId|ArrayTaskId|SubmitTime|JobState|Reason|EligibleTime|Dependency|QOS|ReqTRES)=(\S+)', line))
         if not fields.get('JobId'):
             continue
         identity = fields['JobId']
@@ -312,6 +312,7 @@ def _fill_queue_details(jobs: list[dict[str, Any]]) -> None:
         job['eligible_time'] = _parse_ts(fields.get('EligibleTime', ''))
         job['dependency'] = fields.get('Dependency')
         job['pending_reason'] = fields.get('Reason', job.get('pending_reason', ''))
+        job['qos'] = fields.get('QOS')
         if fields.get('ReqTRES'):
             resources = {}
             for token in fields['ReqTRES'].split(','):
