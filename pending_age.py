@@ -42,6 +42,34 @@ def blocked(reason, dependency):
             '(unfulfilled)' in dependency or '(failed)' in dependency)
 
 
+def observed_ranges(conn, from_ms, to_ms, segments=None):
+    """Unioned [lo, hi] ranges with queue evidence that overlap [from_ms, to_ms)."""
+    if segments is None:
+        segments = conn.execute('SELECT first_ms,last_ms FROM queue_observation_segments '
+                                'WHERE first_ms<? AND last_ms>=?', (to_ms, from_ms)).fetchall()
+    windows = [(r['first_ms'],r['last_ms']) for r in segments]
+    windows += [tuple(r) for r in conn.execute('SELECT first_ms,last_ms FROM queue_observation_windows '
+                                             'WHERE first_ms<? AND last_ms>=?',(to_ms,from_ms))]
+    # Old segments provide evidence before explicit empty-queue coverage windows
+    # were introduced. Union ranges; never min/max across disjoint outages.
+    merged = []
+    for lo,hi in sorted(windows):
+        if merged and lo<=merged[-1][1]: merged[-1][1]=max(hi,merged[-1][1])
+        else: merged.append([lo,hi])
+    return merged
+
+
+def sources_for(points, merged, meta):
+    """'observed' | 'accounting' | 'unknown' per sorted point. meta = (cohort_start_ms, cutoff_ms) or None."""
+    sources=[]
+    cursor=0
+    for t in points:
+        while cursor<len(merged) and merged[cursor][1]<t: cursor+=1
+        observed=cursor<len(merged) and merged[cursor][0]<=t<=merged[cursor][1]
+        sources.append('observed' if observed else 'accounting' if meta and meta[0]<=t<=meta[1] else 'unknown')
+    return sources
+
+
 def get_buckets(conn, from_ms, to_ms, group_by, resolve_group, now_ms=None):
     """Return per-group weighted age samples, so any visible selection pools exactly.
 
@@ -65,21 +93,8 @@ def get_buckets(conn, from_ms, to_ms, group_by, resolve_group, now_ms=None):
     segments = conn.execute('''SELECT s.*,j.user,j.job_name FROM queue_observation_segments s
         LEFT JOIN jobs j ON j.job_id=s.job_id AND j.submit_time_ms=s.submit_time_ms
         WHERE s.first_ms<? AND s.last_ms>=?''',(to_ms,from_ms)).fetchall()
-    windows = [(r['first_ms'],r['last_ms']) for r in segments]
-    windows += [tuple(r) for r in conn.execute('SELECT first_ms,last_ms FROM queue_observation_windows '
-                                             'WHERE first_ms<? AND last_ms>=?',(to_ms,from_ms))]
-    # Old segments provide evidence before explicit empty-queue coverage windows
-    # were introduced. Union ranges; never min/max across disjoint outages.
-    merged = []
-    for lo,hi in sorted(windows):
-        if merged and lo<=merged[-1][1]: merged[-1][1]=max(hi,merged[-1][1])
-        else: merged.append([lo,hi])
-    sources=[]
-    cursor=0
-    for t in points:
-        while cursor<len(merged) and merged[cursor][1]<t: cursor+=1
-        observed=cursor<len(merged) and merged[cursor][0]<=t<=merged[cursor][1]
-        sources.append('observed' if observed else 'accounting' if meta and meta[0]<=t<=meta[1] else 'unknown')
+    merged = observed_ranges(conn, from_ms, to_ms, segments)
+    sources = sources_for(points, merged, meta)
 
     samples, gpu_samples, cpu_samples, counts, colors = {}, {}, {}, {}, {}
     def add(row, lo, hi, eligible, total_gpus, weight, source):
