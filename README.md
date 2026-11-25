@@ -143,6 +143,38 @@ records. `--apply` replaces only the derived queue accounting snapshot, leaving
 job history and live observations intact. Keep the projected records under
 the ignored `data/` directory.
 
+## Waiting people
+
+The Waiting people block counts people, not jobs. A person is waiting when
+they have a GPU job that has been eligible for at least 2 hours (or 24), shows
+a cluster-side pending reason (`Priority`, `Resources`, nodes down or
+unavailable, partition down or inactive), and would still fit under the
+per-user GPU cap of its QOS. Jobs held back by the person's own limits,
+dependencies, holds or array task limits are not counted. People blocked only
+by their own cap are listed in the table as "At own cap". The `rtx` partition
+is excluded. Full definition: `docs/superpowers/specs/2026-11-24-per-person-waiting-view.md`.
+
+The view samples the queue on a fixed grid (1 to 60 minutes, at most 3,000
+samples) and averages over recorded samples only. Times before the recorder
+saw the queue use the accounting import as a faded estimate (no pending
+reasons, default cap). Unrecorded times stay gaps. Data: `GET /api/waiting?from=&to=&tz_offset_min=`.
+
+Settings in `config.py`: `WAITING_THRESHOLDS_H`, `WAITING_QOS_GPU_CAPS`
+(compare with `sacctmgr -nP show qos format=name,maxtrespu`; override with the
+JSON env var `SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS`), `WAITING_DEFAULT_GPU_CAP`
+(for jobs of unknown QOS) and `WAITING_EXCLUDED_PARTITIONS`. The recorder
+stores each job's QOS from this version on; older segments use the default cap.
+
+Read-only cross-check of one day against `sacct`, on a copy of the database:
+
+```bash
+.venv/bin/python scripts/check_waiting_against_sacct.py --db data/copy.db --day 2026-11-25 --tz-offset-min -240
+```
+
+It prints one line per hour with the number of waiting people (W) and of
+people with any 2h+ eligible GPU job in sacct (A), lists each difference with
+its cause, and exits non-zero on an unexplained one.
+
 ## Optional monitoring watchdog
 
 On a Linux host with tmux, flock and Slurm accounting available, run
