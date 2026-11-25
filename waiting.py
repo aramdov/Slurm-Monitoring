@@ -146,9 +146,15 @@ def _segment_lo(row):
 
 _SEGMENT_SQL = '''SELECT s.job_id,s.submit_time_ms,s.first_ms,s.last_ms,s.previous_last_ms,s.state,
     s.reason,s.eligible_time_ms,s.dependency,s.details_observed,s.partition,s.req_gpus,
-    s.array_task_count,s.qos,j.user FROM queue_observation_segments s
+    s.array_task_count,{qos} AS qos,j.user FROM queue_observation_segments s
     LEFT JOIN jobs j ON j.job_id=s.job_id AND j.submit_time_ms=s.submit_time_ms
     WHERE COALESCE(s.previous_last_ms+1,s.first_ms)<=? AND s.last_ms>=?'''
+
+
+def _segment_sql(conn):
+    # Rows recorded before the qos column existed read as unknown QOS (default cap).
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(queue_observation_segments)')}
+    return _SEGMENT_SQL.format(qos='s.qos' if 'qos' in columns else 'NULL')
 
 
 def _rules(caps, default_cap, excluded_partitions, thresholds_h):
@@ -160,7 +166,7 @@ def _rules(caps, default_cap, excluded_partitions, thresholds_h):
 def _instant_observed(conn, t_ms, excluded, first_threshold):
     """Pending entries, running GPUs and per-job verdicts at one observed instant."""
     pending, running, verdicts = defaultdict(list), defaultdict(Counter), defaultdict(list)
-    for row in conn.execute(_SEGMENT_SQL, (t_ms, t_ms)):
+    for row in conn.execute(_segment_sql(conn), (t_ms, t_ms)):
         user = row['user'] or 'unknown'
         if row['state'] == 'RUNNING':
             if (row['req_gpus'] or 0) > 0:
@@ -260,7 +266,7 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
     nb = len(buckets)
 
     meta = conn.execute('SELECT cohort_start_ms,cutoff_ms FROM queue_accounting_meta WHERE id=1').fetchone()
-    segments = conn.execute(_SEGMENT_SQL, (points[-1], points[0])).fetchall() if points else []
+    segments = conn.execute(_segment_sql(conn), (points[-1], points[0])).fetchall() if points else []
     merged = pending_age.observed_ranges(conn, from_ms, to_ms, segments)
     sources = pending_age.sources_for(points, merged, meta)
 

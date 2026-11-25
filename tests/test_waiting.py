@@ -319,6 +319,16 @@ class Waiting(unittest.TestCase):
         self.assertEqual(users['c']['jobs'][0]['failed'], 'over_cap')
         self.assertEqual(users['d']['jobs'][0]['failed'], 'too_young')
 
+    def test_segments_without_qos_column_use_default_cap(self):
+        self.polls([job('1', 'a'), running('r', 'b', 35), job('2', 'b')], T0, T0 + 10 * M)
+        self.c.execute('ALTER TABLE queue_observation_segments DROP COLUMN qos')
+        self.c.commit()
+        result = self.run_view(T0, T0 + 10 * M)
+        self.assertEqual(list(result['users']), ['a'])
+        self.assertGreater(self.person(result, 'b')['capped_h'], 0)
+        self.assertEqual(w.explain(self.c, T0 + 5 * M, caps=CAPS, default_cap=35)['users']['a']['status'],
+                         'waiting')
+
     def test_unmapped_qos_listed(self):
         self.polls([job('1', 'a', qos='mystery')], T0, T0 + 10 * M)
         result = self.run_view(T0, T0 + 10 * M)
