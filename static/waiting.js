@@ -35,8 +35,14 @@
     });
   }
 
-  function tableRows(data, selected, sortKey = 'waiting_h', descending = true) {
-    const rows = (data.people || []).filter(row => !selected || selected.has(row.user));
+  // Default: numbers from observed samples only (pending reasons known). With estimates: every sample,
+  // including accounting estimates where held and dependent jobs look like waiting.
+  function tableRows(data, selected, sortKey = 'waiting_h', descending = true, includeEstimates = false) {
+    let rows = (data.people || []).filter(row => !selected || selected.has(row.user));
+    if (!includeEstimates) {
+      rows = rows.map(row => ({ ...row, ...(row.observed || {}) }))
+        .filter(row => row.waiting_h > 0 || row.capped_h > 0);
+    }
     const direction = descending ? -1 : 1;
     return rows.sort((a, b) => {
       const x = a[sortKey], y = b[sortKey];
@@ -50,7 +56,15 @@
     });
   }
 
-  const api = { series, tableRows };
+  // Fraction of known samples in the range that came from the accounting estimate.
+  function estimateShare(data) {
+    const sum = values => (values || []).reduce((a, b) => a + b, 0);
+    const accounting = sum(data.samples.accounting);
+    const known = accounting + sum(data.samples.observed);
+    return known ? accounting / known : 0;
+  }
+
+  const api = { series, tableRows, estimateShare };
   root.Waiting = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(globalThis);

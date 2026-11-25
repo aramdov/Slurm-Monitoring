@@ -1058,3 +1058,51 @@ body.usage-page {
 .waiting-table .estimate-mark { margin-left: 0.3rem; font-size: 10px; color: #fbbf24; }
 
 .waiting-footnote:empty { display: none; }
+
+/* display:flex above would otherwise beat the hidden attribute. */
+.waiting-unavailable[hidden],
+.waiting-warning[hidden] { display: none; }
+
+.waiting-warning {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #b45309;
+  border-radius: 6px;
+  background: rgba(180, 83, 9, 0.12);
+  color: #fcd34d;
+  font-size: 11px;
+}
+
+.waiting-table-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.waiting-table tbody tr.person { cursor: pointer; }
+.waiting-table tbody tr.person:hover td { background: rgba(255, 255, 255, 0.04); }
+.waiting-table tbody tr.person.open td { background: rgba(255, 255, 255, 0.06); }
+
+.waiting-table td.waiting-detail {
+  text-align: left;
+  white-space: normal;
+  padding: 0.5rem 0.75rem 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.waiting-detail-head { margin-bottom: 0.4rem; color: var(--text-muted); }
+
+.waiting-jobs { border-collapse: collapse; font-size: 11px; }
+.waiting-jobs th, .waiting-jobs td {
+  padding: 0.2rem 0.6rem 0.2rem 0;
+  text-align: left;
+  border: 0;
+  cursor: default;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.waiting-jobs td.counts { color: #4ade80; }
+.waiting-jobs td.skipped { color: var(--text-muted); }

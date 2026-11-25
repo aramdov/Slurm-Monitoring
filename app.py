@@ -7,6 +7,8 @@ import re
 import subprocess
 import threading
 import time
+
+import slurm
 from functools import wraps
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -261,7 +263,40 @@ def api_waiting():
         return jsonify({"error": "A valid from/to range is required"}), 400
     tz_offset_min = request.args.get("tz_offset_min", default=0, type=int)
     tz_offset_min = max(-840, min(720, tz_offset_min))
-    return jsonify(history.get_waiting_people(config.HISTORY_DB_PATH, from_ms, to_ms, tz_offset_min))
+    data = history.get_waiting_people(config.HISTORY_DB_PATH, from_ms, to_ms, tz_offset_min)
+    data["rules"]["cap_drift"] = _cap_drift(config.waiting_cap_history()[-1]["caps"])
+    return jsonify(data)
+
+
+_live_caps_cache: dict = {}
+_LIVE_CAPS_TTL_S = 600
+
+
+def _cap_drift(configured: dict) -> list | None:
+    """QOS whose live sacctmgr GPU cap differs from the newest configured period. None if unknown."""
+    now = time.time()
+    if not _live_caps_cache or now - _live_caps_cache["at"] > _LIVE_CAPS_TTL_S:
+        _live_caps_cache.update(at=now, caps=slurm.get_qos_gpu_caps())
+    live = _live_caps_cache["caps"]
+    if live is None:
+        return None
+    drift = []
+    for qos in sorted(live):
+        if qos not in configured:
+            drift.append({"qos": qos, "configured": "not listed", "live": live[qos]})
+        elif configured[qos] != live[qos]:
+            drift.append({"qos": qos, "configured": configured[qos], "live": live[qos]})
+    return drift
+
+
+@app.route("/api/waiting/explain")
+def api_waiting_explain():
+    """One person's pending GPU jobs and the rule each one passed or failed. Params: user, t (ms, optional)."""
+    user = request.args.get("user", "").strip()
+    if not user:
+        return jsonify({"error": "user is required"}), 400
+    t_ms = request.args.get("t", type=int)
+    return jsonify(history.get_waiting_explain(config.HISTORY_DB_PATH, user, t_ms))
 
 
 @app.route("/api/wait")

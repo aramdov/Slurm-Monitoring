@@ -157,10 +157,31 @@ def _segment_sql(conn):
     return _SEGMENT_SQL.format(qos='s.qos' if 'qos' in columns else 'NULL')
 
 
-def _rules(caps, default_cap, excluded_partitions, thresholds_h):
-    caps = dict(caps or {})
+def _schedule(caps, default_cap, cap_history):
+    """Sorted [{from_ms, caps, default_cap}]; the first period starts at None (always)."""
+    if not cap_history:
+        cap_history = [{'from_ms': None, 'caps': caps or {}, 'default_cap': default_cap}]
+    periods = sorted(({'from_ms': p['from_ms'], 'caps': dict(p['caps'] or {}),
+                       'default_cap': p.get('default_cap')} for p in cap_history),
+                     key=lambda p: -1 if p['from_ms'] is None else p['from_ms'])
+    periods[0]['from_ms'] = None
+    return periods
+
+
+def _caps_at(schedule, t_ms):
+    """(caps, default_cap) in force at t_ms."""
+    period = schedule[0]
+    for candidate in schedule[1:]:
+        if candidate['from_ms'] > t_ms:
+            break
+        period = candidate
+    return period['caps'], period['default_cap']
+
+
+def _rules(caps, default_cap, excluded_partitions, thresholds_h, cap_history=None):
     thresholds_ms = tuple(sorted(int(h * H) for h in thresholds_h))
-    return caps, default_cap, tuple(excluded_partitions or ()), thresholds_ms
+    return (_schedule(caps, default_cap, cap_history), tuple(excluded_partitions or ()),
+            thresholds_ms)
 
 
 def _instant_observed(conn, t_ms, excluded, first_threshold):
@@ -219,10 +240,13 @@ def _running_jobs(conn, first_ms, last_ms):
                         (last_ms, first_ms))
 
 
-def explain(conn, t_ms, caps=None, default_cap=None, excluded_partitions=(), thresholds_h=(2, 24)):
+def explain(conn, t_ms, caps=None, default_cap=None, excluded_partitions=(), thresholds_h=(2, 24),
+            cap_history=None):
     """Per user at one instant: status ('waiting' | 'capped' | 'not_counted'), and for
     each pending GPU job the first rule it failed (None = counts)."""
-    caps, default_cap, excluded, thresholds_ms = _rules(caps, default_cap, excluded_partitions, thresholds_h)
+    schedule, excluded, thresholds_ms = _rules(caps, default_cap, excluded_partitions, thresholds_h,
+                                               cap_history)
+    caps, default_cap = _caps_at(schedule, t_ms)
     meta = conn.execute('SELECT cohort_start_ms,cutoff_ms FROM queue_accounting_meta WHERE id=1').fetchone()
     merged = pending_age.observed_ranges(conn, t_ms, t_ms + 1)
     source = pending_age.sources_for([t_ms], merged, meta)[0]
@@ -242,12 +266,14 @@ def explain(conn, t_ms, caps=None, default_cap=None, excluded_partitions=(), thr
             users[user] = {'status': status, 'running_gpus': result['running_gpus'],
                            'running_by_qos': {str(k): v for k, v in run.items()},
                            'max_age_ms': result['max_age_ms'], 'jobs': jobs}
-    return {'t_ms': t_ms, 'source': source, 'users': users}
+    return {'t_ms': t_ms, 'source': source, 'caps': caps, 'default_cap': default_cap, 'users': users}
 
 
 def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, default_cap=None,
-                excluded_partitions=(), thresholds_h=(2, 24)):
-    caps, default_cap, excluded, thresholds_ms = _rules(caps, default_cap, excluded_partitions, thresholds_h)
+                excluded_partitions=(), thresholds_h=(2, 24), cap_history=None):
+    schedule, excluded, thresholds_ms = _rules(caps, default_cap, excluded_partitions, thresholds_h,
+                                               cap_history)
+    known_qos = set().union(*(p['caps'] for p in schedule))
     first_threshold = thresholds_ms[0]
     keys = [f'w{h:g}' for h in sorted(thresholds_h)]
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
@@ -295,7 +321,7 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
         qos = row['qos']
         if row['state'] == 'RUNNING':
             if (row['req_gpus'] or 0) > 0:
-                if qos is not None and qos not in caps:
+                if qos is not None and qos not in known_qos:
                     unmapped.add(qos)
                 for i in range(i0, i1):
                     if sources[i] == 'observed':
@@ -309,7 +335,7 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
             label = normalise_reason(row['reason']) or '(empty)'
             unclassified[label] += sum(1 for i in range(i0, i1) if sources[i] == 'observed')
             continue
-        if qos is not None and qos not in caps:
+        if qos is not None and qos not in known_qos:
             unmapped.add(qos)
         entry = _entry(row['eligible_time_ms'], row['req_gpus'], row['array_task_count'], qos, cap_reason)
         for i in range(i0, i1):
@@ -337,9 +363,11 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
 
     expected, observed, from_accounting = [0] * nb, [0] * nb, [0] * nb
     per_user = {}
-    people = defaultdict(lambda: {'wait': Counter(), 'idle': 0, 'capped': 0, 'estimate': 0,
-                                  'longest': 0, 'asked_sum': 0, 'asked_max': 0,
-                                  'run_sum': 0, 'run_max': 0})
+    def new_stats():
+        return {'wait': Counter(), 'idle': 0, 'capped': 0, 'estimate': 0, 'longest': 0,
+                'asked_sum': 0, 'asked_max': 0, 'run_sum': 0, 'run_max': 0}
+    people = defaultdict(new_stats)
+    people_observed = defaultdict(new_stats)  # same numbers, observed samples only
     empty = {}
     for i, t in enumerate(points):
         b = bucket_of[i]
@@ -351,12 +379,14 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
         if pending[i] is None:
             continue
         run_at = running[i] or empty
+        caps, default_cap = _caps_at(schedule, t)
         for user, jobs in pending[i].items():
             run = run_at.get(user, empty)
             result = classify_person(jobs, run, t, caps, default_cap, thresholds_ms)
-            stats = people[user]
+            targets = [people[user]] + ([people_observed[user]] if source == 'observed' else [])
             if result['capped']:
-                stats['capped'] += 1
+                for stats in targets:
+                    stats['capped'] += 1
             if not result['waiting'][first_threshold]:
                 continue
             cells = per_user.get(user)
@@ -366,16 +396,18 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
             for key, threshold in zip(keys, thresholds_ms):
                 if result['waiting'][threshold]:
                     cells[key][b] += 1
-                    stats['wait'][threshold] += 1
                     if idle:
                         cells[key + '_idle'][b] += 1
-            stats['idle'] += idle
-            stats['estimate'] += source == 'accounting'
-            stats['longest'] = max(stats['longest'], result['max_age_ms'])
-            stats['asked_sum'] += result['asked_gpus']
-            stats['asked_max'] = max(stats['asked_max'], result['asked_gpus'])
-            stats['run_sum'] += result['running_gpus']
-            stats['run_max'] = max(stats['run_max'], result['running_gpus'])
+            for stats in targets:
+                for threshold in thresholds_ms:
+                    stats['wait'][threshold] += result['waiting'][threshold]
+                stats['idle'] += idle
+                stats['estimate'] += source == 'accounting'
+                stats['longest'] = max(stats['longest'], result['max_age_ms'])
+                stats['asked_sum'] += result['asked_gpus']
+                stats['asked_max'] = max(stats['asked_max'], result['asked_gpus'])
+                stats['run_sum'] += result['running_gpus']
+                stats['run_max'] = max(stats['run_max'], result['running_gpus'])
 
     current = None
     current_age = {}
@@ -385,8 +417,8 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
         now_pending, now_running, _ = _instant_observed(conn, as_of, excluded, first_threshold)
         counts = [0] * len(thresholds_ms)
         for user, jobs in now_pending.items():
-            result = classify_person(jobs, dict(now_running.get(user, {})), as_of, caps,
-                                     default_cap, thresholds_ms)
+            result = classify_person(jobs, dict(now_running.get(user, {})), as_of,
+                                     *_caps_at(schedule, as_of), thresholds_ms)
             for k, threshold in enumerate(thresholds_ms):
                 counts[k] += result['waiting'][threshold]
             if result['waiting'][first_threshold]:
@@ -396,26 +428,31 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
             current['people_' + key[1:] + 'h'] = count
 
     hours = step / H
-    rows = []
-    for user, stats in people.items():
+
+    def numbers(stats):
         waited = stats['wait'][first_threshold]
-        if not waited and not stats['capped']:
-            continue
-        rows.append({
-            'user': user,
+        return {
             'waiting_h': round(waited * hours, 4),
             'waiting_24h_h': round(stats['wait'][thresholds_ms[-1]] * hours, 4),
             'idle_h': round(stats['idle'] * hours, 4),
             'capped_h': round(stats['capped'] * hours, 4),
             'longest_wait_h': round(stats['longest'] / H, 4) if waited else None,
-            'current_wait_h': (round(current_age[user] / H, 4) if current is not None and user in current_age
-                               else None),
             'avg_asked_gpus': round(stats['asked_sum'] / waited, 2) if waited else None,
             'max_asked_gpus': stats['asked_max'] if waited else None,
             'avg_running_gpus': round(stats['run_sum'] / waited, 2) if waited else None,
             'max_running_gpus': stats['run_max'] if waited else None,
             'estimate_h': round(stats['estimate'] * hours, 4),
-        })
+        }
+
+    rows = []
+    for user, stats in people.items():
+        if not stats['wait'][first_threshold] and not stats['capped']:
+            continue
+        row = {'user': user, **numbers(stats)}
+        row['current_wait_h'] = (round(current_age[user] / H, 4)
+                                 if current is not None and user in current_age else None)
+        row['observed'] = numbers(people_observed[user]) if user in people_observed else numbers(new_stats())
+        rows.append(row)
     rows.sort(key=lambda row: (-row['waiting_h'], row['user']))
 
     return {
@@ -428,7 +465,9 @@ def get_waiting(conn, from_ms, to_ms, tz_offset_min=0, now_ms=None, caps=None, d
         'users': per_user,
         'people': rows,
         'current': current,
-        'rules': {'cluster_reasons': sorted(CLUSTER_REASONS), 'caps': caps, 'default_cap': default_cap,
+        'rules': {'cluster_reasons': sorted(CLUSTER_REASONS),
+                  'caps': _caps_at(schedule, to_ms)[0], 'default_cap': _caps_at(schedule, to_ms)[1],
+                  'cap_history': schedule,
                   'excluded_partitions': list(excluded), 'unmapped_qos': sorted(unmapped)},
         'unclassified_reasons': {k: v for k, v in sorted(unclassified.items()) if v},
     }

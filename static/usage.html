@@ -6,7 +6,7 @@
   <base href="./" />
   <title>Slurm – Usage History</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="usage.css?v=waiting-people-1" />
+  <link rel="stylesheet" href="usage.css?v=waiting-people-2" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -113,7 +113,13 @@
         </div>
       </div>
       <div class="waiting-table-block">
+        <div id="waiting-drift" class="waiting-warning" hidden></div>
+        <div id="waiting-estimate-note" class="waiting-warning" hidden></div>
         <div id="waiting-selection-note" class="chart-description" hidden>Counts people. Sidebar selection applies in Users view.</div>
+        <div class="waiting-table-controls">
+          <label><input type="checkbox" id="waiting-include-estimates" /> Include estimated hours</label>
+          <span class="chart-description">Click a person to see their pending GPU jobs and why each one counts or not.</span>
+        </div>
         <div id="waiting-table" class="waiting-table-wrap"></div>
         <div id="waiting-footnote" class="chart-description waiting-footnote"></div>
       </div>
@@ -186,7 +192,7 @@
   <datalist id="known-users-list"></datalist>
 
   <script src="pending-age.js?v=queue-age-1"></script>
-  <script src="waiting.js?v=waiting-people-1"></script>
-  <script src="usage.js?v=waiting-people-1"></script>
+  <script src="waiting.js?v=waiting-people-2"></script>
+  <script src="usage.js?v=waiting-people-2"></script>
 </body>
 </html>

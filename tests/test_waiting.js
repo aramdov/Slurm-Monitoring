@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { series, tableRows } = require('../static/waiting.js');
+const { series, tableRows, estimateShare } = require('../static/waiting.js');
 
 const hour = 3_600_000;
 const data = {
@@ -14,9 +14,12 @@ const data = {
     carol: { w2: [0, 0, 3], w2_idle: [0, 0, 3], w24: [0, 0, 0], w24_idle: [0, 0, 0] },
   },
   people: [
-    { user: 'alice', waiting_h: 1.5, capped_h: 0, longest_wait_h: 30 },
-    { user: 'bob', waiting_h: 0.5, capped_h: 2, longest_wait_h: null },
-    { user: 'carol', waiting_h: 0.5, capped_h: 0, longest_wait_h: 3 },
+    { user: 'alice', waiting_h: 1.5, capped_h: 0, longest_wait_h: 30, estimate_h: 0.5,
+      observed: { estimate_h: 0, waiting_h: 1, capped_h: 0, longest_wait_h: 30 } },
+    { user: 'bob', waiting_h: 0.5, capped_h: 2, longest_wait_h: null, estimate_h: 0,
+      observed: { estimate_h: 0, waiting_h: 0.5, capped_h: 2, longest_wait_h: null } },
+    { user: 'carol', waiting_h: 0.5, capped_h: 0, longest_wait_h: 3, estimate_h: 0.5,
+      observed: { estimate_h: 0, waiting_h: 0, capped_h: 0, longest_wait_h: null } },
   ],
 };
 
@@ -51,12 +54,26 @@ test('estimate is true when a bucket has accounting samples', () => {
   assert.deepEqual(series(data, null).map(row => row.estimate), [false, false, true]);
 });
 
-test('tableRows filters by selection and sorts both ways, ties by user', () => {
-  assert.deepEqual(tableRows(data, null).map(r => r.user), ['alice', 'bob', 'carol']);
-  assert.deepEqual(tableRows(data, null, 'waiting_h', false).map(r => r.user), ['bob', 'carol', 'alice']);
-  assert.deepEqual(tableRows(data, new Set(['bob', 'carol'])).map(r => r.user), ['bob', 'carol']);
-  assert.deepEqual(tableRows(data, null, 'capped_h').map(r => r.user), ['bob', 'alice', 'carol']);
-  assert.deepEqual(tableRows(data, null, 'longest_wait_h').map(r => r.user), ['alice', 'carol', 'bob']);
-  assert.deepEqual(tableRows(data, null, 'longest_wait_h', false).map(r => r.user), ['carol', 'alice', 'bob']);
-  assert.deepEqual(tableRows(data, null, 'user', false).map(r => r.user), ['alice', 'bob', 'carol']);
+test('tableRows shows observed numbers by default and drops estimate-only people', () => {
+  const rows = tableRows(data, null);
+  assert.deepEqual(rows.map(r => r.user), ['alice', 'bob']);
+  assert.equal(rows[0].waiting_h, 1);
+  assert.equal(rows[0].estimate_h, 0);
+  assert.equal(data.people[0].waiting_h, 1.5, 'input rows are not modified');
+});
+
+test('estimateShare is the accounting fraction of known samples', () => {
+  assert.equal(estimateShare(data), 6 / 18);
+  assert.equal(estimateShare({ samples: { observed: [0], accounting: [0] } }), 0);
+});
+
+test('tableRows with estimates filters by selection and sorts both ways, ties by user', () => {
+  const all = (d, sel, key, desc) => tableRows(d, sel, key, desc, true);
+  assert.deepEqual(all(data, null).map(r => r.user), ['alice', 'bob', 'carol']);
+  assert.deepEqual(all(data, null, 'waiting_h', false).map(r => r.user), ['bob', 'carol', 'alice']);
+  assert.deepEqual(all(data, new Set(['bob', 'carol'])).map(r => r.user), ['bob', 'carol']);
+  assert.deepEqual(all(data, null, 'capped_h').map(r => r.user), ['bob', 'alice', 'carol']);
+  assert.deepEqual(all(data, null, 'longest_wait_h').map(r => r.user), ['alice', 'carol', 'bob']);
+  assert.deepEqual(all(data, null, 'longest_wait_h', false).map(r => r.user), ['carol', 'alice', 'bob']);
+  assert.deepEqual(all(data, null, 'user', false).map(r => r.user), ['alice', 'bob', 'carol']);
 });

@@ -9,7 +9,7 @@ from typing import Any
 
 import config
 
-_SLURM_COMMANDS = {"squeue", "sinfo", "scontrol", "sacct"}
+_SLURM_COMMANDS = {"squeue", "sinfo", "scontrol", "sacct", "sacctmgr"}
 
 
 def _run(cmd: list[str], timeout: int = 30, require_success: bool = False) -> str:
@@ -441,6 +441,23 @@ def _parse_scontrol_time_field(val: str) -> int | None:
     if not v or v in ("Unknown", "N/A", "None"):
         return None
     return _parse_ts(v)
+
+
+_QOS_GPU_CAP_RE = re.compile(r"(?:^|,)gres/gpu=(\d+)(?:,|$)")
+
+
+def get_qos_gpu_caps() -> dict | None:
+    """Live per-user GPU cap by QOS from sacctmgr (MaxTRESPerUser gres/gpu). None if sacctmgr fails."""
+    out = _run(["sacctmgr", "-nP", "show", "qos", "format=name,maxtrespu"], timeout=10)
+    if not out:
+        return None
+    caps = {}
+    for line in out.splitlines():
+        name, _, tres = line.partition("|")
+        if name:
+            match = _QOS_GPU_CAP_RE.search(tres.strip())
+            caps[name.strip()] = int(match.group(1)) if match else None
+    return caps
 
 
 def get_job_final_info(job_id: str) -> tuple[str | None, int | None, int | None]:

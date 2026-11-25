@@ -157,13 +157,23 @@ is excluded. Full definition: `docs/superpowers/specs/2026-11-24-per-person-wait
 The view samples the queue on a fixed grid (1 to 60 minutes, at most 3,000
 samples) and averages over recorded samples only. Times before the recorder
 saw the queue use the accounting import as a faded estimate (no pending
-reasons, default cap). Unrecorded times stay gaps. Data: `GET /api/waiting?from=&to=&tz_offset_min=`.
+reasons, default cap). Unrecorded times stay gaps. The table shows recorded
+hours only by default; a checkbox adds the estimated hours. Data:
+`GET /api/waiting?from=&to=&tz_offset_min=`. Click a person in the table to see
+their pending GPU jobs at the latest sample, with the Slurm reason and the rule
+each job passed or failed: `GET /api/waiting/explain?user=&t=` (`t` in ms,
+optional).
 
-Settings in `config.py`: `WAITING_THRESHOLDS_H`, `WAITING_QOS_GPU_CAPS`
-(compare with `sacctmgr -nP show qos format=name,maxtrespu`; override with the
-JSON env var `SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS`), `WAITING_DEFAULT_GPU_CAP`
-(for jobs of unknown QOS) and `WAITING_EXCLUDED_PARTITIONS`. The recorder
-stores each job's QOS from this version on; older segments use the default cap.
+Settings in `config.py`: `WAITING_THRESHOLDS_H`, `WAITING_QOS_GPU_CAP_HISTORY`
+and `WAITING_EXCLUDED_PARTITIONS`. The cap history is a dated list: each period
+holds the per-user GPU cap of every QOS and the cap for jobs of unknown QOS
+(`default_cap`), and applies from its `from` time until the next period. When a
+QOS cap changes, add a period; `sacctmgr list transactions` gives the time. The
+page compares the newest period with `sacctmgr -nP show qos format=name,maxtrespu`
+(cached 10 minutes) and shows a warning when they differ. The JSON env var
+`SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS` replaces the whole history with one
+undated caps dict. The recorder stores each job's QOS from this version on;
+older segments use the default cap.
 
 Read-only cross-check of one day against `sacct`, on a copy of the database:
 

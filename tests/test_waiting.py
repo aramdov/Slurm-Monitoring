@@ -319,6 +319,34 @@ class Waiting(unittest.TestCase):
         self.assertEqual(users['c']['jobs'][0]['failed'], 'over_cap')
         self.assertEqual(users['d']['jobs'][0]['failed'], 'too_young')
 
+    def test_cap_history_applies_by_time(self):
+        jobs = [running('r', 'b', 10), job('2', 'b', req_gpus=8)]
+        self.polls(jobs, T0, T0 + 2 * H)
+        history_ = [{'from_ms': None, 'caps': {'researcher': 35}, 'default_cap': 35},
+                    {'from_ms': T0 + H, 'caps': {'researcher': 14}, 'default_cap': 14}]
+        result = self.run_view(T0, T0 + 2 * H, cap_history=history_)
+        self.assertEqual(result['users']['b']['w2'], [60, 0])
+        self.assertEqual(self.person(result, 'b')['capped_h'], 1.0)
+        self.assertEqual(result['rules']['caps'], {'researcher': 14})
+        self.assertEqual(result['rules']['default_cap'], 14)
+        self.assertEqual([p['from_ms'] for p in result['rules']['cap_history']], [None, T0 + H])
+        before = w.explain(self.c, T0 + 30 * M, cap_history=history_)
+        after = w.explain(self.c, T0 + 90 * M, cap_history=history_)
+        self.assertEqual(before['users']['b']['status'], 'waiting')
+        self.assertEqual(after['users']['b']['status'], 'capped')
+        self.assertEqual(after['users']['b']['jobs'][0]['failed'], 'over_cap')
+
+    def test_observed_only_numbers(self):
+        self.accounting()
+        estimate = self.person(self.run_view(T0, T0 + H), 'carol')
+        self.assertEqual(estimate['observed']['waiting_h'], 0.0)
+        self.assertIsNone(estimate['observed']['longest_wait_h'])
+        self.polls([job('1', 'dave', req_gpus=4)], T0 + H, T0 + 2 * H)
+        mixed = self.run_view(T0, T0 + 2 * H)
+        dave = self.person(mixed, 'dave')
+        self.assertEqual(dave['observed']['waiting_h'], dave['waiting_h'])
+        self.assertEqual(dave['observed']['avg_asked_gpus'], 4.0)
+
     def test_segments_without_qos_column_use_default_cap(self):
         self.polls([job('1', 'a'), running('r', 'b', 35), job('2', 'b')], T0, T0 + 10 * M)
         self.c.execute('ALTER TABLE queue_observation_segments DROP COLUMN qos')
@@ -365,6 +393,65 @@ class Route(unittest.TestCase):
         self.assertEqual(data['thresholds_h'], [2, 24])
         self.assertEqual(data['rules']['default_cap'], 35)
 
+
+    def test_explain_route(self):
+        self.assertEqual(self.client.get('/api/waiting/explain').status_code, 400)
+        history.upsert_jobs(self.db, [job('1', 'a')], T0, queue_max_gap_ms=GAP)
+        history.upsert_jobs(self.db, [job('1', 'a')], T0 + 5 * M, queue_max_gap_ms=GAP)
+        data = self.client.get(f'/api/waiting/explain?user=a&t={T0 + 5 * M}').get_json()
+        self.assertEqual((data['user'], data['source'], data['status']), ('a', 'observed', 'waiting'))
+        self.assertEqual(data['jobs'][0]['job_id'], '1')
+        self.assertIsNone(data['jobs'][0]['failed'])
+        latest = self.client.get('/api/waiting/explain?user=a').get_json()
+        self.assertEqual(latest['t_ms'], T0 + 5 * M)
+        nobody = self.client.get(f'/api/waiting/explain?user=zed&t={T0 + 5 * M}').get_json()
+        self.assertEqual((nobody['status'], nobody['jobs']), ('none', []))
+
+    def test_cap_drift(self):
+        from unittest import mock
+        import app as dashboard_app
+        dashboard_app._live_caps_cache.clear()
+        with mock.patch('slurm.get_qos_gpu_caps', return_value={'researcher': 14, 'pi': 16, 'newq': 4}):
+            data = self.client.get(f'/api/waiting?from={T0}&to={T0 + H}').get_json()
+        drift = {d['qos']: d for d in data['rules']['cap_drift']}
+        expected_researcher = self.config.waiting_cap_history()[-1]['caps']['researcher']
+        if expected_researcher != 14:
+            self.assertEqual(drift['researcher']['live'], 14)
+        else:
+            self.assertNotIn('researcher', drift)
+        self.assertEqual(drift['newq'], {'qos': 'newq', 'configured': 'not listed', 'live': 4})
+        self.assertNotIn('pi', drift)
+        dashboard_app._live_caps_cache.clear()
+        with mock.patch('slurm.get_qos_gpu_caps', return_value=None):
+            data = self.client.get(f'/api/waiting?from={T0}&to={T0 + H}').get_json()
+        self.assertIsNone(data['rules']['cap_drift'])
+        dashboard_app._live_caps_cache.clear()
+
+
+class LiveCaps(unittest.TestCase):
+    def test_parse(self):
+        from unittest import mock
+        import slurm
+        out = 'normal|\nresearcher|gres/gpu=14\nadmin|cpu=4,gres/gpu=64\nstudent|gres/gpu:h100=1\n'
+        with mock.patch('slurm._run', return_value=out) as run:
+            self.assertEqual(slurm.get_qos_gpu_caps(),
+                             {'normal': None, 'researcher': 14, 'admin': 64, 'student': None})
+        self.assertEqual(run.call_args[0][0][0], 'sacctmgr')
+        with mock.patch('slurm._run', return_value=''):
+            self.assertIsNone(slurm.get_qos_gpu_caps())
+
+
+class CapHistoryConfig(unittest.TestCase):
+    def test_parse_and_order(self):
+        import config
+        periods = config.parse_cap_history([
+            {'from': '2026-11-25T05:08:55-08:00', 'caps': {'researcher': 14}, 'default_cap': 14},
+            {'from': None, 'caps': {'researcher': 35}, 'default_cap': 35}])
+        self.assertEqual([p['from_ms'] for p in periods], [None, 1795612135000])
+        live = config.waiting_cap_history()
+        self.assertIsNone(live[0]['from_ms'])
+        self.assertEqual(live[0]['caps']['researcher'], 35)
+        self.assertEqual(live[-1]['caps']['researcher'], 14)
 
 if __name__ == '__main__':
     unittest.main()

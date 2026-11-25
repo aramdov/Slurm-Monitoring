@@ -880,12 +880,35 @@ def get_waiting_people(db_path: str, from_ms: int, to_ms: int, tz_offset_min: in
         try:
             return waiting.get_waiting(
                 conn, from_ms, to_ms, tz_offset_min,
-                caps=config.WAITING_QOS_GPU_CAPS,
-                default_cap=config.WAITING_DEFAULT_GPU_CAP,
+                cap_history=config.waiting_cap_history(),
                 excluded_partitions=config.WAITING_EXCLUDED_PARTITIONS,
                 thresholds_h=config.WAITING_THRESHOLDS_H)
         finally:
             conn.close()
+
+
+def get_waiting_explain(db_path: str, user: str, t_ms: int | None = None) -> dict:
+    """One person's pending GPU jobs at t_ms (default: latest recorder sample) and why each counts or not."""
+    import config
+    import waiting
+    with _db_lock:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            if t_ms is None:
+                row = conn.execute('SELECT last_ms FROM queue_recorder_status WHERE id=1').fetchone()
+                t_ms = row[0] if row else int(time.time() * 1000)
+            result = waiting.explain(conn, t_ms, cap_history=config.waiting_cap_history(),
+                                     excluded_partitions=config.WAITING_EXCLUDED_PARTITIONS,
+                                     thresholds_h=config.WAITING_THRESHOLDS_H)
+        finally:
+            conn.close()
+    person = result['users'].get(user)
+    base = {'user': user, 't_ms': result['t_ms'], 'source': result['source'],
+            'caps': result['caps'], 'default_cap': result['default_cap']}
+    if person is None:
+        return {**base, 'status': 'none', 'running_gpus': 0, 'running_by_qos': {}, 'jobs': []}
+    return {**base, **person}
 
 
 def get_wait_buckets(db_path: str, from_ms: int, to_ms: int, group_by: str = 'user') -> dict:

@@ -52,6 +52,9 @@ const state = {
   waitingData: null,   // GET /api/waiting response, null when that call failed
   waitingChart: null,
   waitingSort: { key: 'waiting_h', descending: true },
+  waitingIncludeEstimates: false,
+  waitingOpenUser: null,   // person whose job detail row is open
+  waitingRangeEnd: null,   // to_ms of the last /api/waiting request
   viewMode: 'users',   // 'users' | 'projects' | 'units'
   _lastFetchedMode: null,
   unitsData: null,     // cached GET /api/units response
@@ -626,14 +629,49 @@ const waitingColumns = [
   { key: 'capped_h', label: 'At own cap (h)', format: row => fmtWaitingHours(row.capped_h) },
 ];
 
+const fmtWaitingDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+function capsText(caps, defaultCap) {
+  const list = Object.entries(caps).map(([qos, cap]) => `${qos} ${cap == null ? 'none' : cap}`).join(', ');
+  return `${list}; unknown QOS ${defaultCap ?? 'none'}`;
+}
+
+// Only the QOS that differ from the period before, so a dated change reads as one short line.
+function capHistoryText(periods) {
+  return periods.map((period, i) => {
+    if (i === 0) return `Own-cap rule (GPUs per user): ${capsText(period.caps, period.default_cap)}.`;
+    const before = periods[i - 1];
+    const changed = Object.entries(period.caps).filter(([qos, cap]) => before.caps[qos] !== cap)
+      .map(([qos, cap]) => `${qos} ${before.caps[qos] ?? 'none'} → ${cap ?? 'none'}`);
+    if (before.default_cap !== period.default_cap) changed.push(`unknown QOS ${before.default_cap} → ${period.default_cap}`);
+    return `From ${fmtWaitingDate.format(new Date(period.from_ms))}: ${changed.join(', ') || 'no change'}.`;
+  }).join(' ');
+}
+
+function renderWaitingWarnings() {
+  const data = state.waitingData;
+  const drift = document.getElementById('waiting-drift');
+  const estimate = document.getElementById('waiting-estimate-note');
+  const differs = data?.rules?.cap_drift || [];
+  drift.hidden = !differs.length;
+  drift.textContent = differs.length
+    ? `Live Slurm caps differ from the dashboard config (config.py WAITING_QOS_GPU_CAP_HISTORY): ${differs.map(d => `${d.qos} configured ${d.configured ?? 'none'}, live ${d.live ?? 'none'}`).join('; ')}. Counts after the change use the old cap until a dated period is added.`
+    : '';
+  const share = data ? Waiting.estimateShare(data) : 0;
+  estimate.hidden = share === 0;
+  estimate.textContent = share
+    ? `${Math.round(share * 100)}% of this range is estimated from Slurm accounting (faded bars). Accounting has no pending reasons, so held jobs, jobs waiting on another job, and jobs over a partition time limit count as waiting there. The table ${state.waitingIncludeEstimates ? 'includes' : 'leaves out'} those hours.`
+    : '';
+}
+
 function renderWaitingFootnote() {
   const note = document.getElementById('waiting-footnote');
   const data = state.waitingData;
   if (!note) return;
   if (!data) { note.textContent = ''; return; }
-  const { caps, default_cap, excluded_partitions, unmapped_qos } = data.rules;
-  const capText = Object.entries(caps).map(([qos, cap]) => `${qos} ${cap == null ? 'none' : cap}`).join(', ');
-  const parts = [`Own-cap rule (GPUs per user): ${capText}; unknown QOS ${default_cap ?? 'none'}.`,
+  const { excluded_partitions, unmapped_qos } = data.rules;
+  const periods = data.rules.cap_history || [{ from_ms: null, caps: data.rules.caps, default_cap: data.rules.default_cap }];
+  const parts = [capHistoryText(periods),
     `Excluded partitions: ${excluded_partitions.length ? excluded_partitions.join(', ') : 'none'}.`,
     'Averages divide by recorded samples; hours are samples × step. Faded bars are estimates from accounting.'];
   if (unmapped_qos.length) parts.push(`QOS without a configured cap: ${unmapped_qos.join(', ')}.`);
@@ -648,10 +686,11 @@ function renderWaitingTable() {
   const container = document.getElementById('waiting-table');
   if (!container) return;
   renderWaitingFootnote();
+  renderWaitingWarnings();
   const data = state.waitingData;
   if (!data) { container.innerHTML = ''; return; }
   const { key, descending } = state.waitingSort;
-  const rows = Waiting.tableRows(data, waitingSelection(), key, descending);
+  const rows = Waiting.tableRows(data, waitingSelection(), key, descending, state.waitingIncludeEstimates);
   const head = waitingColumns.map(column => {
     const arrow = column.key === key ? (descending ? ' ▼' : ' ▲') : '';
     return `<th data-key="${column.key}" class="${column.key === key ? 'sorted' : ''}">${column.label}${arrow}</th>`;
@@ -662,8 +701,10 @@ function renderWaitingTable() {
       const mark = i === 0 && estimate ? `<span class="estimate-mark" title="${fmtWaitingHours(row.estimate_h)} h from the accounting estimate">est.</span>` : '';
       return `<td>${column.format(row)}${mark}</td>`;
     }).join('');
-    return `<tr class="${estimate ? 'estimate' : ''}">${cells}</tr>`;
-  }).join('') : `<tr><td colspan="${waitingColumns.length}">Nobody waited 2h+ or sat at their cap in this range.</td></tr>`;
+    const open = row.user === state.waitingOpenUser;
+    const detail = open ? `<tr class="detail"><td class="waiting-detail" colspan="${waitingColumns.length}" id="waiting-detail">Loading…</td></tr>` : '';
+    return `<tr class="person${estimate ? ' estimate' : ''}${open ? ' open' : ''}" data-user="${escHtml(row.user)}">${cells}</tr>${detail}`;
+  }).join('') : `<tr><td colspan="${waitingColumns.length}">${state.waitingIncludeEstimates ? 'Nobody waited 2h+ or sat at their cap in this range.' : 'Nobody waited 2h+ or sat at their cap in the recorded part of this range.'}</td></tr>`;
   container.innerHTML = `<table class="waiting-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   container.querySelectorAll('th').forEach(th => {
     th.addEventListener('click', () => {
@@ -674,6 +715,65 @@ function renderWaitingTable() {
       renderWaitingTable();
     });
   });
+  container.querySelectorAll('tr.person').forEach(tr => {
+    tr.addEventListener('click', () => {
+      state.waitingOpenUser = state.waitingOpenUser === tr.dataset.user ? null : tr.dataset.user;
+      renderWaitingTable();
+    });
+  });
+  if (state.waitingOpenUser && document.getElementById('waiting-detail')) loadWaitingDetail(state.waitingOpenUser);
+}
+
+const waitingVerdicts = {
+  null: 'counts',
+  too_young: 'ready for less than 2h',
+  over_cap: 'over own GPU cap',
+  cap_reason: 'Slurm says own GPU cap (QOSMaxGRESPerUser)',
+  dependency_or_hold: 'waits on another job, or held',
+  not_cluster_reason: 'own limit, not the cluster (see reason)',
+  unclassified_reason: 'reason not classified yet',
+  excluded_partition: 'excluded partition',
+  no_eligible: 'not eligible yet (dependency, hold or begin time)',
+  no_details: 'job details not recorded',
+};
+
+// The instant the detail describes: the latest recorder sample if it is inside the range, else the range end.
+function waitingDetailTime() {
+  const asOf = state.waitingData?.current?.as_of_ms;
+  if (asOf != null) return asOf;
+  return state.waitingRangeEnd != null ? Math.min(state.waitingRangeEnd, Date.now()) - 1 : null;
+}
+
+async function loadWaitingDetail(user) {
+  const t = waitingDetailTime();
+  const query = `user=${encodeURIComponent(user)}${t != null ? `&t=${t}` : ''}`;
+  let detail;
+  try {
+    const response = await fetch(apiUrl(`api/waiting/explain?${query}`));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    detail = await response.json();
+  } catch (err) {
+    console.error('Waiting detail unavailable', err);
+    detail = null;
+  }
+  const cell = document.getElementById('waiting-detail');
+  if (!cell || state.waitingOpenUser !== user) return;   // table re-rendered or closed meanwhile
+  if (!detail) { cell.textContent = 'Job detail unavailable.'; return; }
+  const when = fmtWaitingDate.format(new Date(detail.t_ms));
+  const source = detail.source === 'observed' ? 'recorded queue'
+    : detail.source === 'accounting' ? 'accounting estimate, no pending reasons' : 'no data';
+  const status = { waiting: 'waiting', capped: 'at own cap', not_counted: 'not counted', none: 'no pending GPU jobs' }[detail.status] || detail.status;
+  const running = Object.entries(detail.running_by_qos || {}).map(([qos, gpus]) => `${gpus} (${qos === 'null' || qos === 'None' ? 'QOS unknown' : qos})`).join(', ');
+  const head = `<div class="waiting-detail-head">${escHtml(user)} at ${escHtml(when)} (${source}): <strong>${status}</strong>. Running GPUs: ${running || 0}.</div>`;
+  if (!detail.jobs.length) { cell.innerHTML = head; return; }
+  const jobs = [...detail.jobs].sort((a, b) => (b.age_ms ?? 0) - (a.age_ms ?? 0));
+  const rows = jobs.map(job => {
+    const verdict = waitingVerdicts[job.failed] || job.failed;
+    return `<tr><td>${escHtml(job.job_id)}</td><td>${escHtml(job.partition || '')}</td><td>${escHtml(job.qos || '—')}</td>
+      <td>${job.gpus}</td><td>${job.age_ms == null ? '—' : fmtWait(job.age_ms / 3_600_000)}</td>
+      <td>${escHtml(job.reason || '—')}</td><td class="${job.failed == null ? 'counts' : 'skipped'}">${escHtml(verdict)}</td></tr>`;
+  }).join('');
+  cell.innerHTML = `${head}<table class="waiting-jobs"><thead><tr><th>Job</th><th>Partition</th><th>QOS</th><th>GPUs</th><th>Ready for</th><th>Slurm reason</th><th>Verdict</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 // ── Sidebar ──────────────────────────────────────────────────
@@ -794,6 +894,7 @@ async function fetchAndRender() {
                 : state.viewMode === 'projects' ? 'project' : 'unit';
 
   // Separate so a failure here keeps the rest of the page.
+  state.waitingRangeEnd = to_ms;
   const waitingPromise = fetch(apiUrl(`api/waiting?from=${from_ms}&to=${to_ms}&tz_offset_min=${new Date(from_ms).getTimezoneOffset()}`))
     .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
     .catch(err => { console.error('Waiting view unavailable', err); return null; });
@@ -1349,6 +1450,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('apply-btn').addEventListener('click', fetchAndRender);
+  document.getElementById('waiting-include-estimates').addEventListener('change', event => {
+    state.waitingIncludeEstimates = event.target.checked;
+    renderWaitingTable();
+  });
   document.getElementById('queue-category').addEventListener('change', () => {
     renderQueueChart();
     renderWaitingChart();

@@ -1,4 +1,5 @@
 """App config. Nodes discovered from sinfo; GPUS/CPUS_PER_NODE are fallbacks when sinfo has no capacity."""
+from datetime import datetime
 import json
 import os
 
@@ -54,11 +55,41 @@ DISK_RETENTION_DAYS = 14
 
 # Per-person waiting view (Usage page, /api/waiting)
 WAITING_THRESHOLDS_H = (2, 24)
-# Per-user GPU cap by QOS (sacctmgr show qos format=name,maxtrespu). None = no cap.
-# Checked 2026-11-24. Update when a cap changes.
-WAITING_QOS_GPU_CAPS = json.loads(os.environ.get("SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS", "null")) or {
+# Per-user GPU cap by QOS (sacctmgr show qos format=name,maxtrespu), dated. None = no cap.
+# Each period applies from "from" until the next period; the first has from=None.
+# When a cap changes, add a period. The time is in `sacctmgr list transactions`.
+# default_cap is used when a job's QOS is unknown (rows recorded before the qos column).
+_CAPS_BEFORE_2026_11_25 = {
     "researcher": 35, "pi": 16, "student": 1, "admin": 64, "golf": 16, "normal": None,
     "research8_fullnode_guard": None,
 }
-WAITING_DEFAULT_GPU_CAP = 35          # used when a job's QOS is unknown
+WAITING_QOS_GPU_CAP_HISTORY = [
+    {"from": None, "caps": _CAPS_BEFORE_2026_11_25, "default_cap": 35},
+    # researcher 35 -> 14 (fairness trial with Hrant, sacctmgr transaction 2026-11-25T05:08:55-08:00).
+    {"from": "2026-11-25T05:08:55-08:00",
+     "caps": {**_CAPS_BEFORE_2026_11_25, "researcher": 14}, "default_cap": 14},
+]
+
+
+def parse_cap_history(periods):
+    """[{from: ISO-with-offset | None, caps, default_cap}] -> sorted [{from_ms, caps, default_cap}]."""
+    out = []
+    for period in periods:
+        start = period.get("from")
+        from_ms = None if start is None else int(datetime.fromisoformat(start).timestamp() * 1000)
+        out.append({"from_ms": from_ms, "caps": dict(period["caps"]),
+                    "default_cap": period.get("default_cap")})
+    return sorted(out, key=lambda p: -1 if p["from_ms"] is None else p["from_ms"])
+
+
+def waiting_cap_history():
+    """Env SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS (one undated caps dict) overrides the dated list."""
+    override = json.loads(os.environ.get("SLURM_DASHBOARD_WAITING_QOS_GPU_CAPS", "null"))
+    if override:
+        return [{"from_ms": None, "caps": override, "default_cap": WAITING_DEFAULT_GPU_CAP}]
+    return parse_cap_history(WAITING_QOS_GPU_CAP_HISTORY)
+
+
+WAITING_DEFAULT_GPU_CAP = 35          # override's unknown-QOS cap
+WAITING_QOS_GPU_CAPS = parse_cap_history(WAITING_QOS_GPU_CAP_HISTORY)[-1]["caps"]  # newest, for old callers
 WAITING_EXCLUDED_PARTITIONS = ("rtx",)
