@@ -1,5 +1,6 @@
-/* Explorer "Scatter" view: one dot per summarized GPU job at (GPU duty %, SM %), drawn on a canvas.
-   Classification, colors, radius and hit lookup live in jobstats-core.js. Every string from the API
+/* Explorer "Scatter" view: one dot per summarized GPU job at two chosen GPU metrics (default GPU duty %
+   against SM %), drawn on a canvas. Axes, classification, colors, radius and hit lookup live in
+   jobstats-core.js. Every string from the API
    reaches the page through textContent or setAttribute, never innerHTML. */
 (function (root) {
   "use strict";
@@ -10,7 +11,23 @@
   const BUCKETS = [["1", "1 GPU"], ["2-7", "2–7 GPUs"], ["8+", "8+ GPUs"]];
   const REASON_LABELS = [
     ["not_started", "not started", false], ["cpu_only", "CPU-only", false], ["running", "running", true],
-    ["no_summary", "no summary", true], ["no_value", "no duty or SM value", true],
+    ["no_summary", "no summary", true], ["low_sm", "SM under " + C.SCATTER_OCC_SM_MIN_SM + " % (occ/SM undefined)", true],
+    ["no_value", null, true],
+  ];
+  // Drawn only for these unordered pairs: [keys, label, note under the plot or null].
+  const DIAGONALS = [
+    [["gpu_pct", "sm"], "SM = duty (reference)", null],
+    [["sm", "occ"], "OCC = SM (ceiling)",
+      "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. " +
+      "The distance below the line is how empty the SMs were while active."],
+  ];
+  // Preset pairs (same orientation as the buttons in jobstats.html) and their note under the plot.
+  const PAIR_NOTES = [
+    ["gpu_pct", "sm", "The gap between duty and SM is time when a kernel ran but most SMs sat empty."],
+    ["sm", "tc", "Busy SMs with little tensor-core use. Expected for some codes, a lead for others."],
+    ["sm", "dram", "Separates memory-bandwidth-heavy work from the rest of the low-tensor group."],
+    ["sm", "occ_sm", "How full the SMs were while active. Low is normal for large matmul kernels, so read " +
+      "it only for a job that already looks slow."],
   ];
   const NOTES = [
     "Duty and SM are measured separately (NVML and GPM) and averaged over the job's GPUs on their own, " +
@@ -27,11 +44,27 @@
 
   function clamp(v) { return Math.min(100, Math.max(0, v)); }
 
-  function countText(sp) {
+  // Canvas axis text without the trailing "%": "GPU duty", "OCC/SM".
+  const bare = (a) => a.axis.replace(/\s*%$/, "");
+
+  function diagonal(xKey, yKey) {
+    return DIAGONALS.find(([k]) => (k[0] === xKey && k[1] === yKey) || (k[0] === yKey && k[1] === xKey)) || null;
+  }
+
+  function pairNote(xKey, yKey) {
+    const p = PAIR_NOTES.find(([x, y]) => x === xKey && y === yKey);
+    if (p) return p[2];
+    const d = diagonal(xKey, yKey);
+    return d ? d[2] : null;
+  }
+
+  function countText(sp, ax, ay) {
+    const noValue = "no " + (ax.key === ay.key ? bare(ax) : bare(ax) + " or " + bare(ay)) + " value";
     let t = "Plotted " + C.fmtNum(sp.plotted.jobs) + " jobs, " + C.fmtGpuHours(sp.plotted.gpu_hours) + " GPU-h.";
     const parts = [];
-    for (const [k, label, withHours] of REASON_LABELS) {
+    for (const [k, fixed, withHours] of REASON_LABELS) {
       const b = sp.excluded[k];
+      const label = fixed || noValue;
       if (!b.jobs) continue;
       parts.push(label + " " + C.fmtNum(b.jobs) + (withHours ? " (" + C.fmtGpuHours(b.gpu_hours) + " GPU-h)" : ""));
     }
@@ -67,17 +100,33 @@
     return box;
   }
 
-  function tipLines(r) {
+  function tipLines(r, ax, ay) {
     const lines = [
       ["Job", r.jobid], ["Name", r.name], ["User", r.user || C.DASH], ["GPUs", C.fmtNum(r.alloc_gpus)],
       ["GPU-h", C.fmtGpuHours(r.gpu_hours)], ["Duty", C.fmtPct(r.gpu_pct)], ["SM", C.fmtPct(r.sm)],
     ];
+    const extra = ax.key === ay.key ? [ax] : [ax, ay];
+    for (const a of extra) {
+      if (a.key === "gpu_pct" || a.key === "sm") continue;
+      let v = C.fmtPct(C.scatterValue(r, a.key));
+      if (a.key === "occ_sm") v += " (OCC " + C.fmtPct(r.occ) + " of SM " + C.fmtPct(r.sm) + ")";
+      lines.push([bare(a), v]);
+    }
     if (r.low_duty_gpus != null && r.summary_gpus) {
       lines.push(["Low-duty GPUs", r.low_duty_gpus + " of " + r.summary_gpus]);
     }
     const cov = r.coverage;
-    if (cov && ((cov.gpu_pct != null && cov.gpu_pct < 1) || (cov.sm != null && cov.sm < 1))) {
-      lines.push(["Coverage", "duty " + C.fmtPct(100 * (cov.gpu_pct ?? 0), 0) + ", SM " + C.fmtPct(100 * (cov.sm ?? 0), 0)]);
+    if (cov) {
+      // Duty and SM always; any other field the axes need only when it is below 1.
+      const others = [];
+      for (const f of new Set([...ax.needs, ...ay.needs])) {
+        if (f !== "gpu_pct" && f !== "sm" && cov[f] != null && cov[f] < 1) others.push(f);
+      }
+      if ((cov.gpu_pct != null && cov.gpu_pct < 1) || (cov.sm != null && cov.sm < 1) || others.length) {
+        const parts = ["duty " + C.fmtPct(100 * (cov.gpu_pct ?? 0), 0), "SM " + C.fmtPct(100 * (cov.sm ?? 0), 0)];
+        for (const f of others) parts.push(bare(C.scatterAxis(f)) + " " + C.fmtPct(100 * cov[f], 0));
+        lines.push(["Coverage", parts.join(", ")]);
+      }
     }
     if (r.summary_gpus != null && r.summary_gpus < r.alloc_gpus) {
       lines.push(["Reported", r.summary_gpus + " of " + r.alloc_gpus + " GPUs"]);
@@ -87,7 +136,10 @@
 
   function render(container, rows, opts) {
     opts = opts || {};
-    const sp = C.scatterSplit(rows);
+    const ax = C.scatterAxis(opts.x) || C.scatterAxis("gpu_pct");
+    const ay = C.scatterAxis(opts.y) || C.scatterAxis("sm");
+    const diag = diagonal(ax.key, ay.key);
+    const sp = C.scatterSplit(rows, ax.key, ay.key);
     const colors = C.scatterColors(sp.points, opts.mode);
     let maxH = 0;
     for (const r of sp.points) if ((r.gpu_hours || 0) > maxH) maxH = r.gpu_hours;
@@ -97,8 +149,9 @@
     tip.setAttribute("role", "tooltip");
     const plots = el("div", "js-sc-plots");
     const notes = el("div", "js-sc-notes");
-    for (const n of NOTES) notes.append(el("p", "js-hint", n));
-    container.replaceChildren(el("div", "js-sc-count", countText(sp)), plots, legendEl(colors), notes, tip);
+    const pn = pairNote(ax.key, ay.key);
+    for (const n of pn ? [pn, ...NOTES] : NOTES) notes.append(el("p", "js-hint", n));
+    container.replaceChildren(el("div", "js-sc-count", countText(sp, ax, ay)), plots, legendEl(colors), notes, tip);
 
     const panels = [];
     if (!sp.points.length) {
@@ -125,7 +178,7 @@
       }
       const canvas = el("canvas", "js-sc-canvas");
       canvas.setAttribute("role", "img");
-      canvas.setAttribute("aria-label", "Scatter of " + pts.length + " jobs: GPU duty against SM");
+      canvas.setAttribute("aria-label", "Scatter of " + pts.length + " jobs: " + ax.axis + " against " + ay.axis);
       box.append(canvas);
       const p = { box, canvas, pts, dots: [], index: null, hl: null, w: 0, h: 0 };
       bind(p);
@@ -144,8 +197,9 @@
       const pw = w - ML - MR, ph = h - MT - MB;
       p.sx = (v) => ML + clamp(v) / 100 * pw;
       p.sy = (v) => MT + (1 - clamp(v) / 100) * ph;
-      p.dots = p.pts.map((r) => ({ x: p.sx(r.gpu_pct), y: p.sy(r.sm), r: C.scatterRadius(r.gpu_hours, maxH, opts.size), row: r,
-                                   color: colors.colorOf(r), marks: C.scatterMarks(r) }))
+      p.dots = p.pts.map((r) => ({ x: p.sx(C.scatterValue(r, ax.key)), y: p.sy(C.scatterValue(r, ay.key)),
+                                   r: C.scatterRadius(r.gpu_hours, maxH, opts.size), row: r,
+                                   color: colors.colorOf(r), marks: C.scatterMarks(r, ax.key, ay.key) }))
         .map((d, i) => [d, i]).sort((a, b) => b[0].r - a[0].r || a[1] - b[1]).map((x) => x[0]);
       p.index = C.scatterIndex(p.dots);
       p.hl = null;
@@ -172,16 +226,18 @@
         ctx.fillText(String(v), x0 - 5, p.sy(v));
       }
       ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-      ctx.fillText("GPU duty %", (x0 + x1) / 2, p.h - 1);
+      ctx.fillText(ax.axis, (x0 + x1) / 2, p.h - 1);
       ctx.save();
       ctx.translate(10, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2);
-      ctx.textBaseline = "middle"; ctx.fillText("SM %", 0, 0);
+      ctx.textBaseline = "middle"; ctx.fillText(ay.axis, 0, 0);
       ctx.restore();
-      ctx.setLineDash([5, 4]); ctx.strokeStyle = "#71717a";
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.textAlign = "right"; ctx.textBaseline = "top";
-      ctx.fillText("SM = duty (reference)", x1 - 4, y1 + 4);
+      if (diag) {
+        ctx.setLineDash([5, 4]); ctx.strokeStyle = "#71717a";
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.textAlign = "right"; ctx.textBaseline = "top";
+        ctx.fillText(diag[1], x1 - 4, y1 + 4);
+      }
 
       for (const d of p.dots) {
         const color = d.color, m = d.marks;
@@ -219,7 +275,7 @@
 
     function showTip(p, d, cx, cy) {
       if (!d) { tip.hidden = true; return; }
-      tip.replaceChildren(...tipLines(d.row).map(([k, v]) => {
+      tip.replaceChildren(...tipLines(d.row, ax, ay).map(([k, v]) => {
         const line = el("div");
         line.append(el("span", "js-dim", k + " "), el("b", null, String(v)));
         return line;

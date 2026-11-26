@@ -850,7 +850,7 @@ class JsScatterRenderTests(unittest.TestCase):
 
     def test_aria_label(self):
         out = self.render([sc_row("1"), sc_row("2")], "return byTag(c, 'canvas')[0].attrs['aria-label'];")
-        self.assertEqual(out, "Scatter of 2 jobs: GPU duty against SM")
+        self.assertEqual(out, "Scatter of 2 jobs: GPU duty % against SM %")
 
     def test_click_opens_job(self):
         rows = [sc_row("only", gpu_pct=50, sm=50)]
@@ -861,6 +861,131 @@ class JsScatterRenderTests(unittest.TestCase):
                 "return got;")
         out = self.render(rows, body)
         self.assertEqual(out, [["only", True]])
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class JsScatterAxesRenderTests(unittest.TestCase):
+    """X and Y axis pickers: the renderer follows opts.x / opts.y."""
+    render = JsScatterRenderTests.render
+    STANDING = ["Duty and SM are measured separately", "GPU-h counts the whole job"]
+
+    def test_render_axis_labels_and_diagonal(self):
+        body = ("return {t: __calls.filter(x => x.m === 'fillText').map(x => x.a[0]),"
+                " dash: __calls.filter(x => x.m === 'setLineDash' && x.a[0].length > 0).length};")
+        rows = [sc_row("1", tc=10, occ=10)]
+        out = self.render(rows, body, {"x": "sm", "y": "tc"})
+        self.assertIn("SM %", out["t"])
+        self.assertIn("TC %", out["t"])
+        self.assertNotIn("GPU duty %", out["t"])
+        self.assertEqual(out["dash"], 0)
+        self.assertFalse([t for t in out["t"] if "(reference)" in t or "(ceiling)" in t], out["t"])
+        out = self.render(rows, body, {"x": "sm", "y": "occ"})
+        self.assertIn("OCC = SM (ceiling)", out["t"])
+        self.assertEqual(out["dash"], 1)
+        out = self.render(rows, body, {"x": "occ", "y": "sm"})
+        self.assertIn("OCC = SM (ceiling)", out["t"])
+        out = self.render(rows, body)
+        self.assertIn("SM = duty (reference)", out["t"])
+        self.assertIn("GPU duty %", out["t"])
+        self.assertEqual(out["dash"], 1)
+        out = self.render(rows, body, {"x": "sm", "y": "gpu_pct"})
+        self.assertIn("SM = duty (reference)", out["t"])
+
+    def test_render_dots_use_axis_values(self):
+        rows = [sc_row("1", gpu_pct=80, sm=50, tc=10)]
+        # stub canvas: 600 px wide, so h = 432; frame ML 40, MR 12, MT 10, MB 34
+        sx = lambda v: 40 + v / 100 * (600 - 40 - 12)
+        sy = lambda v: 10 + (1 - v / 100) * (432 - 10 - 34)
+        out = self.render(rows, "return [arcs[0].a[0], arcs[0].a[1]];", {"x": "sm", "y": "tc"})
+        self.assertAlmostEqual(out[0], sx(50))
+        self.assertAlmostEqual(out[1], sy(10))
+        out = self.render(rows, "return [arcs[0].a[0], arcs[0].a[1]];")
+        self.assertAlmostEqual(out[0], sx(80))
+        self.assertAlmostEqual(out[1], sy(50))
+
+    def count(self, rows, opts):
+        out = self.render(rows, "return texts(c).filter(t => t.startsWith('Plotted'));", opts)
+        self.assertEqual(len(out), 1)
+        return out[0]
+
+    def test_render_count_line_wording(self):
+        rows = [sc_row("1", tc=10), sc_row("2", tc=None, gpu_hours=2)]
+        self.assertIn("no SM or TC value 1 (2.00 GPU-h)", self.count(rows, {"x": "sm", "y": "tc"}))
+        self.assertIn("no SM value 1 (2.00 GPU-h)", self.count([sc_row("1"), sc_row("2", sm=None, gpu_hours=2)],
+                                                               {"x": "sm", "y": "sm"}))
+        line = self.count([sc_row("1", gpu_pct=None, gpu_hours=2), sc_row("2")], {})
+        self.assertIn("no GPU duty or SM value 1 (2.00 GPU-h)", line)
+        rows = [sc_row("1", sm=50, occ=10), sc_row("2", sm=2, occ=1, gpu_hours=3)]
+        line = self.count(rows, {"x": "sm", "y": "occ_sm"})
+        self.assertIn("SM under 5 % (occ/SM undefined) 1 (3.00 GPU-h)", line)
+        self.assertNotIn("no SM", line)
+
+    def tip(self, rows, opts):
+        body = ("global.requestAnimationFrame = (f) => f();"
+                "const cv = byTag(c, 'canvas')[0]; const a = arcs[0].a;"
+                "const hh = Number(cv.style.height.replace('px', ''));"
+                "cv.getBoundingClientRect = () => ({left: 0, top: 0, width: 600, height: hh});"
+                "cv.listeners.pointermove.forEach(f => f({clientX: a[0], clientY: a[1]}));"
+                "const tip = c.children[c.children.length - 1];"
+                "return {hidden: tip.hidden, lines: tip.children.map(l => l.children.map(x => x.textContent))};")
+        out = self.render(rows, body, opts)
+        self.assertFalse(out["hidden"])
+        return [(k.strip(), v) for k, v in out["lines"]]
+
+    def test_render_tooltip_lines(self):
+        rows = [sc_row("1", sm=48, occ=15)]
+        lines = self.tip(rows, {"x": "sm", "y": "occ_sm"})
+        keys = [k for k, _ in lines]
+        self.assertEqual(keys[:8], ["Job", "Name", "User", "GPUs", "GPU-h", "Duty", "SM", "OCC/SM"])
+        self.assertEqual(lines[7][1], "31.3% (OCC 15.0% of SM 48.0%)")
+        self.assertEqual(keys.count("SM"), 1)
+        keys = [k for k, _ in self.tip(rows, {})]
+        self.assertEqual(keys, ["Job", "Name", "User", "GPUs", "GPU-h", "Duty", "SM", "Low-duty GPUs"])
+        # a non-duty, non-SM pair gets one line per axis, labelled by the axis text without "%"
+        rows = [sc_row("1", tc=12, dram=40, coverage={"gpu_pct": 1, "sm": 1, "tc": 0.5, "dram": 1})]
+        lines = dict(self.tip(rows, {"x": "tc", "y": "dram"}))
+        self.assertEqual(lines["TC"], "12.0%")
+        self.assertEqual(lines["DRAM"], "40.0%")
+        self.assertEqual(lines["Coverage"], "duty 100%, SM 100%, TC 50%")
+
+    def notes(self, opts):
+        return self.render([sc_row("1", tc=10, dram=20, occ=10)],
+                           "return byTag(c, 'p').map(p => p.textContent);", opts)
+
+    def test_render_pair_note(self):
+        presets = {
+            ("gpu_pct", "sm"): "The gap between duty and SM is time when a kernel ran but most SMs sat empty.",
+            ("sm", "tc"): "Busy SMs with little tensor-core use. Expected for some codes, a lead for others.",
+            ("sm", "dram"): "Separates memory-bandwidth-heavy work from the rest of the low-tensor group.",
+            ("sm", "occ_sm"): "How full the SMs were while active. Low is normal for large matmul kernels, so read "
+                              "it only for a job that already looks slow.",
+        }
+        for (x, y), text in presets.items():
+            out = self.notes({"x": x, "y": y})
+            self.assertEqual(len(out), 3, out)
+            self.assertEqual(out[0], text)
+            for i, s in enumerate(self.STANDING):
+                self.assertTrue(out[i + 1].startswith(s), out)
+        out = self.notes({"x": "tc", "y": "dram"})
+        self.assertEqual(len(out), 2, out)
+        for i, s in enumerate(self.STANDING):
+            self.assertTrue(out[i].startswith(s), out)
+        self.assertEqual(self.notes({})[0], presets[("gpu_pct", "sm")])
+        occ = self.notes({"x": "sm", "y": "occ"})
+        self.assertEqual(occ[0], "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. "
+                                 "The distance below the line is how empty the SMs were while active.")
+        self.assertEqual(len(occ), 3)
+
+    def test_aria_label_follows_axes(self):
+        out = self.render([sc_row("1", tc=10)], "return byTag(c, 'canvas')[0].attrs['aria-label'];",
+                          {"x": "sm", "y": "tc"})
+        self.assertIn("SM % against TC %", out)
+        self.assertEqual(out, "Scatter of 1 jobs: SM % against TC %")
+
+    def test_render_bogus_axis_falls_back(self):
+        out = self.render([sc_row("1")], "return byTag(c, 'canvas')[0].attrs['aria-label'];",
+                          {"x": "bogus", "y": None})
+        self.assertEqual(out, "Scatter of 1 jobs: GPU duty % against SM %")
 
 
 class JsPageWiringTests(unittest.TestCase):
