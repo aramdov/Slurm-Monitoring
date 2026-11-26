@@ -510,19 +510,50 @@
   // Same 8 colors as JobstatsCharts.COLORS; groups past the 8th share SCATTER_OTHER.
   const SCATTER_COLORS = ["#60a5fa", "#f59e0b", "#34d399", "#f87171", "#a78bfa", "#22d3ee", "#d4a373", "#94a3b8"];
   const SCATTER_OTHER = "#6b7280";
-  const SCATTER_REASONS = ["not_started", "cpu_only", "running", "no_summary", "no_value"];
+  const SCATTER_REASONS = ["not_started", "cpu_only", "running", "no_summary", "low_sm", "no_value"];
+  // occ/sm is noise when SM is near zero: below this SM % the ratio is undefined.
+  const SCATTER_OCC_SM_MIN_SM = 5;
+  /* Axes the Scatter view can place dots by. key: URL and picker value; label: picker text;
+     axis: text drawn on the canvas; field: the row field (null when derived); needs: the row fields
+     whose coverage decides the hollow mark. All run 0-100. */
+  const SCATTER_AXES = [
+    { key: "gpu_pct", label: "GPU duty % (NVML)", axis: "GPU duty %", field: "gpu_pct", needs: ["gpu_pct"] },
+    { key: "sm", label: "SM activity %", axis: "SM %", field: "sm", needs: ["sm"] },
+    { key: "occ", label: "Occupancy %", axis: "OCC %", field: "occ", needs: ["occ"] },
+    { key: "occ_sm", label: "Occupancy / SM %", axis: "OCC/SM %", field: null, needs: ["occ", "sm"] },
+    { key: "tc", label: "Tensor pipe %", axis: "TC %", field: "tc", needs: ["tc"] },
+    { key: "dram", label: "DRAM bandwidth %", axis: "DRAM %", field: "dram", needs: ["dram"] },
+    { key: "fp32", label: "FP32 pipe %", axis: "FP32 %", field: "fp32", needs: ["fp32"] },
+  ];
+  const scatterAxis = (key) => SCATTER_AXES.find((a) => a.key === key) || null;
+  const finite = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-  function scatterReason(r) {
+  /* The row's value on an axis, or null. occ_sm is 100 * occ / sm, clamped to 100, and only when
+     sm >= SCATTER_OCC_SM_MIN_SM. */
+  function scatterValue(row, key) {
+    const a = scatterAxis(key);
+    if (!a || !row) return null;
+    if (a.field) return finite(row[a.field]);
+    const occ = finite(row.occ), sm = finite(row.sm);
+    if (occ == null || sm == null || sm < SCATTER_OCC_SM_MIN_SM) return null;
+    return Math.min(100, 100 * occ / sm);
+  }
+
+  function scatterReason(r, xKey, yKey) {
     if (r.not_started) return "not_started";
     if (!(r.alloc_gpus > 0)) return "cpu_only";
     if (r.end == null) return "running";
     if (r.summary_state !== "ok") return "no_summary";
-    if (r.gpu_pct == null || r.sm == null) return "no_value";
+    if ((xKey === "occ_sm" || yKey === "occ_sm") && r.sm != null && r.sm < SCATTER_OCC_SM_MIN_SM) return "low_sm";
+    if (scatterValue(r, xKey) == null || scatterValue(r, yKey) == null) return "no_value";
     return null;
   }
 
-  /* Rows that become dots, and the rest counted by the first reason that excludes them. */
-  function scatterSplit(rows) {
+  /* Rows that become dots on the (xKey, yKey) pair, and the rest counted by the first reason that
+     excludes them. Missing or unknown keys mean the default pair, GPU duty against SM. */
+  function scatterSplit(rows, xKey, yKey) {
+    if (!scatterAxis(xKey)) xKey = "gpu_pct";
+    if (!scatterAxis(yKey)) yKey = "sm";
     const excluded = {};
     for (const k of SCATTER_REASONS) excluded[k] = { jobs: 0, gpu_hours: 0 };
     const points = [];
@@ -531,7 +562,7 @@
     for (const r of rows) {
       const h = r.gpu_hours || 0;
       total += h;
-      const why = scatterReason(r);
+      const why = scatterReason(r, xKey, yKey);
       const bin = why ? excluded[why] : plotted;
       bin.jobs += 1;
       bin.gpu_hours += h;
@@ -571,9 +602,12 @@
     return allocGpus >= 8 ? "8+" : allocGpus >= 2 ? "2-7" : "1";
   }
 
-  function scatterMarks(r) {
+  /* Hollow when a field either axis needs has coverage under 1, or fewer GPUs reported than allocated.
+     Unknown keys (including the index Array.map passes) fall back to the default pair. */
+  function scatterMarks(r, xKey, yKey) {
     const cov = r.coverage;
-    const partial = !!cov && ((cov.gpu_pct != null && cov.gpu_pct < 1) || (cov.sm != null && cov.sm < 1));
+    const needs = [...(scatterAxis(xKey) || scatterAxis("gpu_pct")).needs, ...(scatterAxis(yKey) || scatterAxis("sm")).needs];
+    const partial = !!cov && needs.some((f) => cov[f] != null && cov[f] < 1);
     return {
       ring: r.low_duty_gpus > 0,
       hollow: partial || (r.summary_gpus != null && r.summary_gpus < r.alloc_gpus),
@@ -621,7 +655,7 @@
     percentile, spread, aggregate, groupKey, groupRows,
     gpuTable, nodeRows, lifecycle, NOTE_LIMITS, jobNotes, gpuColor, summaryLabel, fmtPct, fmtNum, fmtGB, fmtElapsed, fmtGpuHours,
     TS_STEPS, TS_ORDER, tsTicks, tsTimeAxis, tsNearest, tsGpuLabels, tsStepText,
-    SCATTER_COLORS, SCATTER_OTHER, scatterSplit, scatterColors, scatterRadius, scatterBucket, scatterMarks,
+    SCATTER_COLORS, SCATTER_OTHER, SCATTER_AXES, SCATTER_OCC_SM_MIN_SM, scatterAxis, scatterValue, scatterSplit, scatterColors, scatterRadius, scatterBucket, scatterMarks,
     scatterIndex, scatterHit,
   };
 });

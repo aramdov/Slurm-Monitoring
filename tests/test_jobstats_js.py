@@ -668,6 +668,102 @@ class JsScatterTests(unittest.TestCase):
         self.assertEqual(self.hit([], [[0, 0]]), [None])
 
 
+@unittest.skipUnless(NODE, "node not installed")
+class JsScatterAxesTests(unittest.TestCase):
+    """X and Y axis pickers (spec 2026-11-26-explorer-scatter-axes-design.md): core helpers."""
+
+    def test_axes_table(self):
+        out = run_js("return {axes: core.SCATTER_AXES, mean: core.MEAN_KEYS, min: core.SCATTER_OCC_SM_MIN_SM};", None)
+        axes = out["axes"]
+        self.assertEqual([a["key"] for a in axes], ["gpu_pct", "sm", "occ", "occ_sm", "tc", "dram", "fp32"])
+        for a in axes:
+            if a["field"] is not None:
+                self.assertIn(a["field"], out["mean"])
+                self.assertEqual(a["needs"], [a["field"]])
+        occ_sm = next(a for a in axes if a["key"] == "occ_sm")
+        self.assertIsNone(occ_sm["field"])
+        self.assertEqual(occ_sm["needs"], ["occ", "sm"])
+        self.assertEqual([a["label"] for a in axes],
+                         ["GPU duty % (NVML)", "SM activity %", "Occupancy %", "Occupancy / SM %",
+                          "Tensor pipe %", "DRAM bandwidth %", "FP32 pipe %"])
+        self.assertEqual([a["axis"] for a in axes],
+                         ["GPU duty %", "SM %", "OCC %", "OCC/SM %", "TC %", "DRAM %", "FP32 %"])
+        self.assertEqual(out["min"], 5)
+
+    def test_scatter_value(self):
+        cases = [
+            ({"tc": 12.5}, "tc"), ({"tc": None}, "tc"), ({"dram": 40}, "dram"), ({"gpu_pct": 0}, "gpu_pct"),
+            ({"occ": 15, "sm": 48}, "occ_sm"), ({"occ": 60, "sm": 50}, "occ_sm"), ({"occ": 1, "sm": 4.9}, "occ_sm"),
+            ({"occ": 1, "sm": None}, "occ_sm"), ({"occ": None, "sm": 50}, "occ_sm"), ({"occ": 0, "sm": 50}, "occ_sm"),
+            ({"tc": 5}, "bogus"),
+        ]
+        out = run_js("return data.map(([r, k]) => core.scatterValue(r, k));", cases)
+        self.assertEqual(out, [12.5, None, 40, 0, 31.25, 100, None, None, None, 0, None])
+        # NaN / Infinity cannot travel through JSON; check them inside Node
+        nf = run_js("return [core.scatterValue({sm: NaN}, 'sm'), core.scatterValue({sm: Infinity}, 'sm'),"
+                    " core.scatterValue({occ: NaN, sm: 50}, 'occ_sm')];", None)
+        self.assertEqual(nf, [None, None, None])
+
+    def split_rows(self):
+        return [
+            sc_row("ns", not_started=True, alloc_gpus=0, end=None, summary_state="missing", gpu_hours=0),
+            sc_row("cpu", alloc_gpus=0, end=None, summary_state="missing", gpu_hours=0),
+            sc_row("run", end=None, summary_state="missing", gpu_hours=4.0),
+            sc_row("p1", gpu_hours=2.0),
+            sc_row("nosum", summary_state="short", gpu_hours=0.5),
+            sc_row("nosm", sm=None, gpu_hours=3.0),
+            sc_row("p2", gpu_hours=6.0),
+        ]
+
+    def test_split_default_axes_unchanged(self):
+        out = run_js("return [core.scatterSplit(data), core.scatterSplit(data, 'gpu_pct', 'sm')];", self.split_rows())
+        for sp in out:
+            ex = sp["excluded"]
+            self.assertEqual(set(ex), {"not_started", "cpu_only", "running", "no_summary", "low_sm", "no_value"})
+            self.assertEqual(ex["not_started"]["jobs"], 1)
+            self.assertEqual(ex["cpu_only"]["jobs"], 1)
+            self.assertEqual(ex["running"], {"jobs": 1, "gpu_hours": 4.0})
+            self.assertEqual(ex["no_summary"], {"jobs": 1, "gpu_hours": 0.5})
+            self.assertEqual(ex["no_value"], {"jobs": 1, "gpu_hours": 3.0})
+            self.assertEqual(ex["low_sm"], {"jobs": 0, "gpu_hours": 0})
+            self.assertEqual([r["jobid"] for r in sp["points"]], ["p1", "p2"])
+            self.assertEqual(sp["plotted"], {"jobs": 2, "gpu_hours": 8.0})
+            self.assertEqual(sp["total_gpu_hours"], 15.5)
+
+    def test_split_follows_axes(self):
+        rows = [sc_row("a", sm=None, tc=20, dram=30), sc_row("b", sm=40, tc=None, dram=30)]
+        out = run_js("return [core.scatterSplit(data, 'sm', 'tc'), core.scatterSplit(data, 'gpu_pct', 'dram')];", rows)
+        self.assertEqual(out[0]["excluded"]["no_value"]["jobs"], 2)
+        self.assertEqual(out[0]["points"], [])
+        self.assertEqual(out[1]["excluded"]["no_value"]["jobs"], 0)
+        self.assertEqual([r["jobid"] for r in out[1]["points"]], ["a", "b"])
+
+    def test_split_low_sm_before_no_value(self):
+        rows = [sc_row("a", sm=2, occ=None, gpu_hours=1.5), sc_row("b", sm=2, occ=1, gpu_hours=2.5),
+                sc_row("c", sm=5, occ=None), sc_row("d", sm=5, occ=2)]
+        body = ("const a = core.scatterSplit(data, 'sm', 'occ_sm'), b = core.scatterSplit(data, 'sm', 'occ');"
+                "return [a, b, a.points.map(r => core.scatterValue(r, 'occ_sm'))];")
+        a, b, vals = run_js(body, rows)
+        self.assertEqual(a["excluded"]["low_sm"], {"jobs": 2, "gpu_hours": 4.0})
+        self.assertEqual(a["excluded"]["no_value"], {"jobs": 1, "gpu_hours": 1.0})
+        self.assertEqual([r["jobid"] for r in a["points"]], ["d"])
+        self.assertEqual(vals, [40])
+        self.assertEqual(b["excluded"]["low_sm"], {"jobs": 0, "gpu_hours": 0})
+        self.assertEqual([r["jobid"] for r in b["points"]], ["b", "d"])
+        self.assertEqual(b["excluded"]["no_value"]["jobs"], 2)
+
+    def test_marks_follow_axes(self):
+        rows = [sc_row("tc", tc=10, coverage={"gpu_pct": 1, "sm": 1, "tc": 0.5}),
+                sc_row("occ", occ=10, coverage={"gpu_pct": 1, "sm": 1, "occ": 0.5}),
+                sc_row("fewer", tc=10, occ=10, alloc_gpus=8, summary_gpus=6)]
+        body = ("const pairs = [['sm', 'tc'], ['gpu_pct', 'sm'], ['sm', 'occ_sm'], ['dram', 'fp32']];"
+                "return data.map(r => pairs.map(([x, y]) => core.scatterMarks(r, x, y).hollow));")
+        out = run_js(body, rows)
+        self.assertEqual(out[0], [True, False, False, False])
+        self.assertEqual(out[1], [False, False, True, False])
+        self.assertEqual(out[2], [True, True, True, True])
+
+
 # STUB_DOM plus a canvas whose 2D context records every method call, and an innerHTML trap.
 SC_STUB = STUB_DOM + (
     "global.__calls=[];global.__inner=[];"
