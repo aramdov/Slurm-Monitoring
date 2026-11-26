@@ -883,7 +883,9 @@ class JsScatterAxesRenderTests(unittest.TestCase):
         self.assertIn("OCC = SM (ceiling)", out["t"])
         self.assertEqual(out["dash"], 1)
         out = self.render(rows, body, {"x": "occ", "y": "sm"})
-        self.assertIn("OCC = SM (ceiling)", out["t"])
+        self.assertIn("SM = OCC (floor)", out["t"])
+        self.assertNotIn("OCC = SM (ceiling)", out["t"])
+        self.assertEqual(out["dash"], 1)
         out = self.render(rows, body)
         self.assertIn("SM = duty (reference)", out["t"])
         self.assertIn("GPU duty %", out["t"])
@@ -962,19 +964,25 @@ class JsScatterAxesRenderTests(unittest.TestCase):
         }
         for (x, y), text in presets.items():
             out = self.notes({"x": x, "y": y})
-            self.assertEqual(len(out), 3, out)
             self.assertEqual(out[0], text)
-            for i, s in enumerate(self.STANDING):
+            # The duty/SM note talks about "the line", so it shows only where that line is drawn.
+            standing = self.STANDING if (x, y) == ("gpu_pct", "sm") else self.STANDING[1:]
+            self.assertEqual(len(out), 1 + len(standing), out)
+            for i, s in enumerate(standing):
                 self.assertTrue(out[i + 1].startswith(s), out)
         out = self.notes({"x": "tc", "y": "dram"})
-        self.assertEqual(len(out), 2, out)
-        for i, s in enumerate(self.STANDING):
-            self.assertTrue(out[i].startswith(s), out)
+        self.assertEqual(len(out), 1, out)
+        self.assertTrue(out[0].startswith(self.STANDING[1]), out)
         self.assertEqual(self.notes({})[0], presets[("gpu_pct", "sm")])
+        self.assertTrue(self.notes({"x": "sm", "y": "gpu_pct"})[0].startswith(self.STANDING[0]))
         occ = self.notes({"x": "sm", "y": "occ"})
         self.assertEqual(occ[0], "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. "
                                  "The distance below the line is how empty the SMs were while active.")
-        self.assertEqual(len(occ), 3)
+        self.assertEqual(len(occ), 2, occ)
+        flip = self.notes({"x": "occ", "y": "sm"})
+        self.assertEqual(flip[0], "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. "
+                                  "The distance above the line is how empty the SMs were while active.")
+        self.assertEqual(len(flip), 2, flip)
 
     def test_aria_label_follows_axes(self):
         out = self.render([sc_row("1", tc=10)], "return byTag(c, 'canvas')[0].attrs['aria-label'];",

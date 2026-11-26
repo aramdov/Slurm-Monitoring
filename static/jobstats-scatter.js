@@ -14,12 +14,14 @@
     ["no_summary", "no summary", true], ["low_sm", "SM under " + C.SCATTER_OCC_SM_MIN_SM + " % (occ/SM undefined)", true],
     ["no_value", null, true],
   ];
-  // Drawn only for these unordered pairs: [keys, label, note under the plot or null].
+  // Drawn only for these pairs: [[x, y], label, note under the plot or null, either orientation?].
+  // OCC <= SM always, so the SM/OCC line is a ceiling with SM on X and a floor with SM on Y.
+  const OCC_NOTE = "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. " +
+    "The distance %s the line is how empty the SMs were while active.";
   const DIAGONALS = [
-    [["gpu_pct", "sm"], "SM = duty (reference)", null],
-    [["sm", "occ"], "OCC = SM (ceiling)",
-      "Occupancy counts idle SM-cycles as zero, so it cannot exceed SM activity. " +
-      "The distance below the line is how empty the SMs were while active."],
+    [["gpu_pct", "sm"], "SM = duty (reference)", null, true],
+    [["sm", "occ"], "OCC = SM (ceiling)", OCC_NOTE.replace("%s", "below"), false],
+    [["occ", "sm"], "SM = OCC (floor)", OCC_NOTE.replace("%s", "above"), false],
   ];
   // Preset pairs (same orientation as the buttons in jobstats.html) and their note under the plot.
   const PAIR_NOTES = [
@@ -48,7 +50,8 @@
   const bare = (a) => a.axis.replace(/\s*%$/, "");
 
   function diagonal(xKey, yKey) {
-    return DIAGONALS.find(([k]) => (k[0] === xKey && k[1] === yKey) || (k[0] === yKey && k[1] === xKey)) || null;
+    return DIAGONALS.find(([k, , , either]) => (k[0] === xKey && k[1] === yKey) ||
+      (either && k[0] === yKey && k[1] === xKey)) || null;
   }
 
   function pairNote(xKey, yKey) {
@@ -150,7 +153,9 @@
     const plots = el("div", "js-sc-plots");
     const notes = el("div", "js-sc-notes");
     const pn = pairNote(ax.key, ay.key);
-    for (const n of pn ? [pn, ...NOTES] : NOTES) notes.append(el("p", "js-hint", n));
+    // The duty/SM note talks about "the line", so it shows only where that line is drawn.
+    const dutyLine = diagonal(ax.key, ay.key) === DIAGONALS[0];
+    for (const n of [pn, dutyLine ? NOTES[0] : null, NOTES[1]]) if (n) notes.append(el("p", "js-hint", n));
     container.replaceChildren(el("div", "js-sc-count", countText(sp, ax, ay)), plots, legendEl(colors), notes, tip);
 
     const panels = [];
