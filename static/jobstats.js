@@ -14,7 +14,8 @@
 
   const DEF = { range: "7d", from: null, to: null, q: "", gpus: "all", mingh: 0, metric: "gpu_pct", below: null, above: null,
                 sort: "end", dir: "desc", view: "jobs", by: "name", gsort: "gpu_hours", gdir: "desc",
-                size: "gpuh", split: "0" };
+                size: "gpuh", split: "0", x: "gpu_pct", y: "sm" };
+  const AXIS_KEYS = C.SCATTER_AXES.map((a) => a.key);
   const st = Object.assign({}, DEF, { limit: PAGE, glimit: GPAGE, data: null, open: new Set(), cache: null });
 
   // ------------------------------------------------------------------ DOM helpers
@@ -167,6 +168,8 @@
     st.view = pick(p.get("view"), ["jobs", "groups", "scatter"], DEF.view);
     st.size = pick(p.get("size"), ["gpuh", "equal"], DEF.size);
     st.split = pick(p.get("split"), ["0", "1"], DEF.split);
+    st.x = pick(p.get("x"), AXIS_KEYS, DEF.x);
+    st.y = pick(p.get("y"), AXIS_KEYS, DEF.y);
     st.by = pick(p.get("by"), ["name", "array", "family"], DEF.by);
     st.gsort = pick(p.get("gsort"), GCOLKEYS, DEF.gsort);
     st.gdir = pick(p.get("gdir"), ["asc", "desc"], DEF.gdir);
@@ -179,7 +182,7 @@
     if (st.range === "custom") { p.set("from", isoMinute(st.from)); p.set("to", isoMinute(st.to)); }
     else if (st.range !== DEF.range) p.set("range", st.range);
     if (st.q) p.set("q", st.q);
-    for (const k of ["gpus", "sort", "dir", "view", "by", "gsort", "gdir", "size", "split"]) if (st[k] !== DEF[k]) p.set(k, st[k]);
+    for (const k of ["gpus", "sort", "dir", "view", "by", "gsort", "gdir", "size", "split", "x", "y"]) if (st[k] !== DEF[k]) p.set(k, st[k]);
     if (st.mingh) p.set("mingh", st.mingh);
     if (st.metric !== DEF.metric) p.set("metric", st.metric);
     if (st.below != null) p.set("below", st.below);
@@ -270,6 +273,10 @@
     press("#js-by", st.by);
     press("#js-size", st.size);
     press("#js-split", st.split);
+    document.querySelectorAll("#js-preset button").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.x === st.x && b.dataset.y === st.y)));
+    $("#js-x").value = st.x;
+    $("#js-y").value = st.y;
     $("#js-custom").hidden = !(st.range === "custom" || st.showCustom);
     if (st.range === "custom" && !st.showCustom && st.from && st.to) {
       $("#js-from").value = localInput(st.from);
@@ -314,7 +321,7 @@
   let scatter = null;
   function renderScatter(rows) {
     scatter = window.JobstatsScatter.render($("#js-scatter-wrap"), rows, {
-      mode: st.by, size: st.size, split: st.split === "1", onOpen: openJob,
+      mode: st.by, size: st.size, split: st.split === "1", x: st.x, y: st.y, onOpen: openJob,
     });
     renderStats(rows, C.aggregate(rows));
   }
@@ -883,6 +890,14 @@
   bindSeg("#js-by", (v) => update({ by: v, open: new Set() }));
   bindSeg("#js-size", (v) => update({ size: v }));
   bindSeg("#js-split", (v) => update({ split: v }));
+  $("#js-preset").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-x]");
+    if (b) update({ x: b.dataset.x, y: b.dataset.y });
+  });
+  for (const k of ["x", "y"]) {
+    $("#js-" + k).replaceChildren(...C.SCATTER_AXES.map((a) => el("option", { value: a.key }, a.label)));
+    $("#js-" + k).addEventListener("change", (e) => update({ [k]: e.target.value }));
+  }
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);

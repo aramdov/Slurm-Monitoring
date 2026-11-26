@@ -6,7 +6,7 @@
   <base href="./" />
   <title>Slurm – Jobstats</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="jobstats.css?v=m6-sc" />
+  <link rel="stylesheet" href="jobstats.css?v=m7-ax" />
 </head>
 <body class="jobstats-page">
   <header class="header">
@@ -99,6 +99,14 @@
         <button type="button" data-v="family">name family</button>
       </div>
       <div class="js-sc-bar" id="js-sc-bar" hidden>
+        <div class="js-seg" id="js-preset" role="group" aria-label="Axis presets">
+          <button type="button" data-x="gpu_pct" data-y="sm">Duty vs SM</button>
+          <button type="button" data-x="sm" data-y="tc">SM vs tensor</button>
+          <button type="button" data-x="sm" data-y="dram">SM vs DRAM</button>
+          <button type="button" data-x="sm" data-y="occ_sm">SM vs occ/SM</button>
+        </div>
+        <span class="js-sc-ax"><label class="js-lbl" for="js-x">X</label><select id="js-x"></select></span>
+        <span class="js-sc-ax"><label class="js-lbl" for="js-y">Y</label><select id="js-y"></select></span>
         <span class="js-lbl">Dot size</span>
         <div class="js-seg" id="js-size" role="group" aria-label="Dot size">
           <button type="button" data-v="gpuh">GPU-hours</button>
@@ -131,8 +139,9 @@
           GPU % is NVML utilization; SM, TC (tensor) and DRAM are GPM fractions shown as percent.</li>
         <li>GPU-h is allocated GPUs × elapsed, for every job. Metrics come only from jobs with a summary (<code>ok</code>).
           GPU-h counts the whole job when it overlaps the range, even the part outside it.</li>
-        <li>Scatter: one dot per job with a summary; position is the job's mean duty and mean SM over its GPUs.
-          Ring and hollow mark uneven or incomplete GPUs.</li>
+        <li>Scatter: one dot per job with a summary; position is the job's mean of the two chosen metrics over its GPUs.
+          OCC/SM is occupancy divided by SM activity and is left out when SM is under 5 %. Ring and hollow mark uneven
+          or incomplete GPUs.</li>
         <li>Totals and group means are weighted by GPU-seconds: Σ(elapsed × value × GPUs with the field) / Σ(elapsed × GPUs
           with the field). Spread (p10, median, p90) is over per-job values, unweighted, with 3 or more jobs.</li>
         <li>CPU eff is Σ CPU-seconds used / Σ CPU-seconds allocated. Memory columns are peaks: totals and groups show the
@@ -148,9 +157,9 @@
 
   <main class="js-wrap" id="js-jobview" hidden></main>
 
-  <script src="jobstats-core.js?v=m6-sc"></script>
-  <script src="jobstats-charts.js?v=m6-sc"></script>
-  <script src="jobstats-scatter.js?v=m6-sc"></script>
-  <script src="jobstats.js?v=m6-sc"></script>
+  <script src="jobstats-core.js?v=m7-ax"></script>
+  <script src="jobstats-charts.js?v=m7-ax"></script>
+  <script src="jobstats-scatter.js?v=m7-ax"></script>
+  <script src="jobstats.js?v=m7-ax"></script>
 </body>
 </html>

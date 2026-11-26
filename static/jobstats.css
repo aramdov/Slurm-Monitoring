@@ -199,3 +199,4 @@ svg.js-strip .med { stroke: #f4f4f5; stroke-width: 2.4; }
   overflow-wrap: anywhere; }
 .js-sc-tip[hidden] { display: none; }
 .js-sc-bar { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.js-sc-ax { display: inline-flex; align-items: center; gap: 4px; }

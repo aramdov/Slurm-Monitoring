@@ -526,7 +526,7 @@ class JsTimeseriesTests(unittest.TestCase):
 
     def test_page_loads_charts_script_with_new_version(self):
         html = (STATIC / "jobstats.html").read_text()
-        self.assertIn('src="jobstats-charts.js?v=m6-sc"', html)
+        self.assertIn('src="jobstats-charts.js?v=m7-ax"', html)
         self.assertNotIn("m4-3-user", html)
         self.assertLess(html.index("jobstats-core.js"), html.index("jobstats-charts.js"))
         self.assertLess(html.index("jobstats-charts.js"), html.index('src="jobstats.js'))
@@ -1017,13 +1017,41 @@ class JsPageWiringTests(unittest.TestCase):
         refs = re.findall(r'(?:src|href)="(jobstats[\w-]*\.(?:js|css)[^"]*)"', self.html)
         self.assertEqual(len(refs), 5, refs)
         for ref in refs:
-            self.assertTrue(ref.endswith("?v=m6-sc"), ref)
+            self.assertTrue(ref.endswith("?v=m7-ax"), ref)
 
     def test_url_keys(self):
         self.assertIn('["jobs", "groups", "scatter"]', self.js)
         self.assertIn('size: "gpuh"', self.js)
         self.assertIn('split: "0"', self.js)
         self.assertIn("JobstatsScatter.render(", self.js)
+
+    def test_axis_controls(self):
+        for frag in ('id="js-x"', 'id="js-y"', 'id="js-preset"'):
+            self.assertIn(frag, self.html)
+        bar = self.html[self.html.index('id="js-sc-bar"'):]
+        self.assertLess(bar.index('id="js-preset"'), bar.index('id="js-x"'))
+        self.assertLess(bar.index('id="js-y"'), bar.index('id="js-size"'))
+        group = self.html[self.html.index('id="js-preset"'):]
+        group = group[:group.index("</div>")]
+        for x, y, label in (("gpu_pct", "sm", "Duty vs SM"), ("sm", "tc", "SM vs tensor"),
+                            ("sm", "dram", "SM vs DRAM"), ("sm", "occ_sm", "SM vs occ/SM")):
+            self.assertIn('<button type="button" data-x="%s" data-y="%s">%s</button>' % (x, y, label), group)
+        self.assertEqual(group.count("<button"), 4)
+
+    def test_axis_url_state(self):
+        self.assertIn('x: "gpu_pct"', self.js)
+        self.assertIn('y: "sm"', self.js)
+        self.assertIn('st.x = pick(p.get("x"), AXIS_KEYS, DEF.x)', self.js)
+        self.assertIn('st.y = pick(p.get("y"), AXIS_KEYS, DEF.y)', self.js)
+        self.assertIn('"size", "split", "x", "y"]', self.js)
+        self.assertIn("x: st.x, y: st.y", self.js)
+        self.assertIn("C.SCATTER_AXES.map(", self.js)
+
+    def test_axis_scatter_note(self):
+        note = self.html[self.html.index("How the numbers are computed"):]
+        self.assertIn("Scatter: one dot per job with a summary; position is the job's mean of the two chosen metrics "
+                      "over its GPUs. OCC/SM is occupancy divided by SM activity and is left out when SM is under 5 %. "
+                      "Ring and hollow mark uneven or incomplete GPUs.", " ".join(note.split()))
 
 
 @unittest.skipUnless(NODE, "node not installed")
