@@ -69,7 +69,7 @@ function ageBands(data, selected, prefix, measure) {
   return queueBands.map(({ label, color, glow }, band) => ({
     label, backgroundColor: color, glow,
     data: intervals.map(({ means, ...interval }) => ({ ...interval, y: means[band] })),
-  }));
+  })).reverse();
 }
 
 

@@ -9,9 +9,9 @@ const data = {
   cpu_age_samples: { user: { cpu_only: [[[2 * hour, 32]], [], []] } },
 };
 const values = (category, measure, sample) => ageBands(data, ['user'], category, measure).map(b => b.data[sample].y);
-assert.deepEqual(values('gte8', 'gpus', 0), [0, 0, 0, 0, 16]);
-assert.deepEqual(values('cpu_only', 'cpus', 0), [0, 32, 0, 0, 0]);
-assert.deepEqual(values('cpu_only', 'jobs', 0), [0, 4, 0, 0, 0]);
+assert.deepEqual(values('gte8', 'gpus', 0), [16, 0, 0, 0, 0]);
+assert.deepEqual(values('cpu_only', 'cpus', 0), [0, 0, 0, 32, 0]);
+assert.deepEqual(values('cpu_only', 'jobs', 0), [0, 0, 0, 4, 0]);
 assert.deepEqual(values('', 'jobs', 1), [null, null, null, null, null]);
 assert.deepEqual(values('', 'jobs', 2), [0, 0, 0, 0, 0]);
 assert.equal(summarize(data, ['user'], 'gte8', 0).count, 2);
@@ -21,6 +21,7 @@ long.sources[1] = 'unknown';
 long.gpu_age_samples.user.gte8[0] = [[0, 10]];
 const bars = ageBands(long, ['user'], 'gte8', 'gpus');
 assert.equal(bars[0].data.length, 60);
-assert.equal(bars[0].data[0].y, 2);
+assert.deepEqual(bars.map(b => b.label), ['7+ days', '3–7 days', '1–3 days', '2–24h', '<2h']);
+assert.equal(bars.at(-1).data[0].y, 2);
 assert.equal(bars[0].data[0].known, 5);
 console.log('Queue demand, age bands, averaging, and missing data checks passed');
